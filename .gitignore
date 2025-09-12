@@ -1,0 +1,35 @@
+# Gitignore for Caracal Library
+
+# Python-specific files
+__pycache__/
+*.py[cod]
+*.so
+
+# Virtual environment files and directories
+/venv/
+.env
+
+# Jupyter Notebook temporary files
+.ipynb_checkpoints/
+
+# IDE-specific files (e.g., PyCharm, VS Code)
+.idea/
+.vscode/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Custom development files - do not commit
+_dev/
+codebase.py
+make_codebase.sh
+
+# Data files
+data/
+
+# Other temporary or miscellaneous files
+.DS_Store
+*~
+```
