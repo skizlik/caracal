@@ -371,10 +371,69 @@ if SKLEARN_AVAILABLE:
             import gc
             gc.collect()
 
-        def fit(self, train_data: Union[Tuple[np.ndarray, np.ndarray], Any], **kwargs):
+        # Replace the ScikitLearnModelWrapper.fit() method in core.py with this:
+
+        def fit(self, train_data: Union[Tuple[np.ndarray, np.ndarray], Any],
+                validation_data: Optional[Any] = None,
+                epochs: Optional[int] = None,  # Accept but ignore
+                batch_size: Optional[int] = None,  # Accept but ignore
+                verbose: Optional[int] = None,  # Accept but ignore
+                **kwargs):
+            """
+            Fit the scikit-learn model and create a mock history for ExperimentRunner compatibility.
+
+            Args:
+                train_data: Tuple of (X_train, y_train)
+                validation_data: Optional tuple of (X_val, y_val)
+                epochs: Ignored for sklearn models (Keras compatibility)
+                batch_size: Ignored for sklearn models (Keras compatibility)
+                verbose: Ignored for sklearn models (Keras compatibility)
+                **kwargs: Additional fit parameters passed to sklearn model
+            """
             if isinstance(train_data, tuple) and len(train_data) == 2:
                 X_train, y_train = train_data
-                self.model.fit(X_train, y_train, **kwargs)
+
+                # Filter out Keras-specific kwargs that sklearn doesn't understand
+                sklearn_kwargs = {}
+                for key, value in kwargs.items():
+                    # Only pass through parameters that sklearn models typically accept
+                    if key in ['sample_weight', 'check_input', 'X_idx_sorted']:
+                        sklearn_kwargs[key] = value
+                    # Silently ignore other parameters (like validation_split, callbacks, etc.)
+
+                # Fit the model (sklearn models ignore epochs/batch_size/verbose from signature)
+                self.model.fit(X_train, y_train, **sklearn_kwargs)
+
+                # Calculate training accuracy
+                train_accuracy = self.model.score(X_train, y_train)
+
+                # Create mock history dictionary (sklearn trains in one "epoch")
+                history_dict = {
+                    'accuracy': [train_accuracy],  # Training accuracy
+                    'loss': [1.0 - train_accuracy]  # Mock loss as 1 - accuracy
+                }
+
+                # Add validation metrics if validation data provided
+                if validation_data is not None and isinstance(validation_data, tuple) and len(validation_data) == 2:
+                    X_val, y_val = validation_data
+                    val_accuracy = self.model.score(X_val, y_val)
+                    history_dict['val_accuracy'] = [val_accuracy]
+                    history_dict['val_loss'] = [1.0 - val_accuracy]
+                else:
+                    # ExperimentRunner expects validation metrics - use training metrics as fallback
+                    history_dict['val_accuracy'] = [train_accuracy]
+                    history_dict['val_loss'] = [1.0 - train_accuracy]
+
+                # Create a mock history object that mimics Keras History
+                class MockHistory:
+                    """Mock Keras History object for sklearn compatibility."""
+
+                    def __init__(self, history_dict):
+                        self.history = history_dict
+                        self.params = {}  # Empty params dict like Keras
+
+                self.history = MockHistory(history_dict)
+
             else:
                 raise ValueError("ScikitLearnModelWrapper.fit() expects train_data as a tuple of (X_train, y_train)")
 

@@ -1,35 +1,130 @@
-# Caracal
+# Caracal v0.0.1
 
-**A Python library for the rigorous analysis of machine learning model stability and performance.**
+**A Python library for rigorous analysis of machine learning model variability and performance stability.**
 
 ---
 
-## Caracal: Computational Analysis of Run And Convergence Algorithms Library
+## Overview
 
-A common practice in applied machine learning is to train a model once and report its final performance metric. However, the stochastic nature of the training process means that identical runs can produce a significant range of outcomes. `Caracal` is a project to build a lightweight, intuitive toolkit for quantifying the stability, reliability, and hyperparameter sensitivity of ML models.
+Machine learning practitioners commonly train a model once and report its performance. However, stochastic training processes can produce significantly different outcomes across identical runs. **Caracal** provides tools to quantify and analyze this variability, helping researchers and practitioners understand model reliability and make more informed decisions.
 
-This is an active, early-stage development project. The core architecture is being built, but the API is subject to change, and many features are not yet fully implemented or tested. The primary goal is to build a robust foundation for a powerful, professional-grade tool.
+> **Warning: Early Development Notice**: This is v0.0.1 - a working prototype with core functionality implemented. The API will evolve significantly before v0.1.0. Use for experimentation and feedback.
 
-## Key Features (Under Development)
+## What Works Now (v0.0.1)
 
-The goal of the `v0.1.0` release is to include:
-* **Model Agnostic Wrappers** for Keras and Scikit-learn.
-* **Stability Analysis** to analyze the statistical distribution of performance metrics.
-* **Sensitivity Analysis** to automate testing across a range of hyperparameters.
-* **Training Diagnostics** to quantify "bounciness" and detect "model collapse."
+- **Variability Studies**: Run identical models multiple times and analyze performance distributions
+- **Statistical Analysis**: Compare model performance with effect sizes and significance tests
+- **Model Wrappers**: Support for Keras/TensorFlow and scikit-learn models
+- **Multiple Data Handlers**: TabularDataHandler, ImageDataHandler, TextDataHandler, TimeSeriesDataHandler
+- **Visualization**: Specialized plots for training curves (neural networks) and run distributions (sklearn)
+- **Enhanced Results**: Statistical integration and comprehensive analysis methods
 
-## Installation (for Development & Testing)
+## Quick Start
 
-`Caracal` is not yet available on PyPI. To test the current development version, clone this repository and install it in "editable mode":
+### Installation
 
 ```bash
-git clone [https://github.com/skizlik/caracal.git](https://github.com/skizlik/caracal.git)
+git clone https://github.com/skizlik/caracal.git
 cd caracal
 pip install -e .
 ```
 
+### GPU Support (Docker)
+For TensorFlow GPU support in a containerized environment:
+```bash
+./build-gpu.sh    # Build the container
+./run-gpu.sh      # Launch with GPU support
+```
+
+### Basic Usage
+
+```python
+import caracal as cr
+from caracal import ModelConfig, TabularDataHandler
+
+# Define your model builder
+def create_model(config):
+    # Your model creation logic
+    return wrapped_model
+
+# Set up data and configuration
+data_handler = TabularDataHandler('data.csv', target_column='target')
+config = ModelConfig({'epochs': 10, 'batch_size': 32})
+
+# Run variability study
+results = cr.run_variability_study(
+    model_builder=create_model,
+    data_handler=data_handler,
+    model_config=config,
+    num_runs=5
+)
+
+# Analyze results
+print(results.summarize())
+final_accuracies = results.get_final_metrics('val_accuracy')
+```
+
+## Current Architecture
+
+### Core Components
+- **ModelConfig**: Parameter management with validation
+- **BaseModelWrapper**: Unified interface for different ML frameworks
+- **ExperimentRunner**: Orchestrates variability studies
+- **VariabilityStudyResults**: Enhanced results with analysis methods
+- **DataHandler**: Configurable data loading and splitting
+
+### Framework Support
+- **Keras/TensorFlow**: Full support with epoch-by-epoch metrics
+- **scikit-learn**: Adapted support with run-based variability analysis
+- **Statistical Analysis**: Integration with scipy-based hypothesis tests
+
+### Data Handlers (Available Now)
+- **TabularDataHandler**: CSV files with automatic train/val/test splitting
+- **ImageDataHandler**: Directory-based image classification datasets
+- **TextDataHandler**: Text classification from CSV with tokenization
+- **TimeSeriesDataHandler**: Time series data with sequence generation
+
+## Planned for v0.1.0
+
+- Hyperparameter sensitivity analysis
+- Advanced convergence diagnostics
+- Comprehensive documentation and tutorials
+- Extended statistical analysis suite
+- Performance optimization
+- API stabilization
+
+## Dependencies
+
+**Required:**
+- pandas, numpy, scikit-learn
+
+**Optional (for full functionality):**
+- tensorflow (neural network support, ImageDataHandler, TextDataHandler, TimeSeriesDataHandler)
+- scipy (statistical tests)
+- matplotlib, seaborn (plotting)
+- mlflow (experiment tracking)
+- shap (model explainability)
+- hyperopt (hyperparameter tuning)
+
+## Development Status
+
+**Working**: Core variability studies, statistical analysis, visualization, data handlers
+**Experimental**: sklearn integration, advanced plotting features, hyperparameter tuning
+**Planned**: Comprehensive tutorials, API stabilization, performance optimization
+
 ## Contributing
-Feedback, ideas, and contributions at this early stage are highly welcome. If you are interested in the problem of model stability, please feel free to open an issue to discuss your thoughts.
+
+This project is in active development. Feedback on the core architecture and API design is particularly valuable at this stage. Please open issues to discuss:
+
+- Use cases and feature requirements
+- API design preferences
+- Integration with existing workflows
+- Performance and scalability concerns
 
 ## License
-This project is licensed under the terms of the **MIT License**.
+
+MIT License - see LICENSE file for details.
+
+---
+
+*Caracal: **Computational Analysis of Run And Convergence Algorithms Library***

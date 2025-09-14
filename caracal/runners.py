@@ -42,19 +42,29 @@ class ExperimentRunner:
         self.final_val_accuracies: List[float] = []
         self.final_test_metrics: List[Dict[str, Any]] = []
 
-    def _run_single_fit(self, run_id: int) -> Optional[pd.DataFrame]:
+    def _run_single_fit(self, run_id: int, epochs: int) -> Optional[pd.DataFrame]:
+        """
+        Run a single training iteration.
+
+        Args:
+            run_id: Identifier for this run
+            epochs: Number of epochs to train for this run
+
+        Returns:
+            DataFrame with training metrics or None if failed
+        """
         self.logger.log_params({'run_num': run_id})
         self._cleanup_gpu_memory()
 
         try:
             wrapped_model = self.model_builder(self.model_config)
 
-            print(f" - Training model {run_id}/{self.model_config.num_runs}...")
+            print(f" - Training model {run_id}...")
             wrapped_model.fit(train_data=self.train_data,
                               validation_data=self.val_data,
-                              epochs=self.model_config.epochs_per_run,
-                              batch_size=self.model_config.batch_size,
-                              verbose=self.model_config.verbose)
+                              epochs=epochs,
+                              batch_size=self.model_config.get('batch_size', 32),
+                              verbose=self.model_config.get('verbose', 0))
 
             if wrapped_model.history:
                 history_df = pd.DataFrame(wrapped_model.history.history)
@@ -82,13 +92,13 @@ class ExperimentRunner:
                     for metric_name, value in test_metrics.items():
                         self.logger.log_metric(f'final_test_{metric_name}', value, step=run_id)
 
-                print(f" - Run {run_id}/{self.model_config.num_runs} completed.")
+                print(f" - Run {run_id} completed.")
                 return history_df
             else:
-                print(f" - Run {run_id}/{self.model_config.num_runs} failed to produce a training history.")
+                print(f" - Run {run_id} failed to produce a training history.")
                 return None
         except Exception as e:
-            print(f" - Run {run_id}/{self.model_config.num_runs} failed with an error: {e}")
+            print(f" - Run {run_id} failed with an error: {e}")
             return None
 
     def _cleanup_gpu_memory(self):
@@ -105,14 +115,28 @@ class ExperimentRunner:
         except:
             pass
 
-    def run_study(self) -> Tuple[List[pd.DataFrame], List[float], List[Dict[str, Any]]]:
-        """Orchestrates the entire variability study."""
-        print(f"Starting Variability Study for {self.model_config.num_runs} runs.")
+    def run_study(self, num_runs: int = 5, epochs_per_run: Optional[int] = None) -> Tuple[
+        List[pd.DataFrame], List[float], List[Dict[str, Any]]]:
+        """
+        Orchestrates the entire variability study.
+
+        Args:
+            num_runs: Number of training runs to perform
+            epochs_per_run: Epochs per run (defaults to config.epochs or 10)
+
+        Returns:
+            Tuple of (all_runs_metrics, final_val_accuracies, final_test_metrics)
+        """
+        if epochs_per_run is None:
+            epochs_per_run = self.model_config.get('epochs', 10)
+
+        print(f"Starting Variability Study for {num_runs} runs.")
         self.logger.log_params(self.model_config.params)
+        self.logger.log_params({'num_runs': num_runs, 'epochs_per_run': epochs_per_run})
 
         try:
-            for i in range(self.model_config.num_runs):
-                metrics_df = self._run_single_fit(run_id=i + 1)
+            for i in range(num_runs):
+                metrics_df = self._run_single_fit(run_id=i + 1, epochs=epochs_per_run)
                 if metrics_df is not None:
                     self.all_runs_metrics.append(metrics_df)
         except KeyboardInterrupt:
@@ -381,12 +405,23 @@ class VariabilityStudyResults:
         )
 
 
-def run_variability_study(model_builder, data_handler, model_config, logger=None) -> VariabilityStudyResults:
+def run_variability_study(model_builder, data_handler, model_config,
+                          num_runs: int = 5, epochs_per_run: Optional[int] = None,
+                          logger=None) -> VariabilityStudyResults:
     """
     Enhanced variability study that returns a VariabilityStudyResults object
     with methods for easy integration with statistical analysis.
 
-    Maintains backward compatibility through tuple unpacking support.
+    Args:
+        model_builder: Function that creates a BaseModelWrapper from ModelConfig
+        data_handler: DataHandler instance
+        model_config: ModelConfig with training parameters
+        num_runs: Number of runs to perform (default 5)
+        epochs_per_run: Epochs per run (defaults to model_config.epochs or 10)
+        logger: Optional logger instance
+
+    Returns:
+        VariabilityStudyResults object with analysis methods
     """
     # Import here to avoid circular dependency
     from .loggers import BaseLogger
@@ -401,7 +436,10 @@ def run_variability_study(model_builder, data_handler, model_config, logger=None
         logger=logger
     )
 
-    all_metrics, final_accuracies, final_test_metrics = runner.run_study()
+    all_metrics, final_accuracies, final_test_metrics = runner.run_study(
+        num_runs=num_runs,
+        epochs_per_run=epochs_per_run
+    )
 
     # Return enhanced results object
     return VariabilityStudyResults(all_metrics, final_accuracies, final_test_metrics)

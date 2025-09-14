@@ -25,10 +25,7 @@ from .exceptions import (
 
 # Data handling (always available)
 from .data import (
-    DataHandler,
-    validate_split_params,
-    get_data_handler_by_type,
-    analyze_dataset_structure
+    DataHandler
 )
 
 # Loggers (always available - BaseLogger works without dependencies)
@@ -46,7 +43,6 @@ __all__ = [
 
     # Data handling
     'DataHandler',
-    'validate_split_params',
     'get_data_handler_by_type',
     'analyze_dataset_structure',
 

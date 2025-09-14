@@ -1,11 +1,6 @@
 # caracal/config.py
 
-from typing import Dict, Any, Optional
-
-# caracal/config.py
-
-from typing import Dict, Any, Optional, Union
-
+from typing import Dict, Any, List, Optional, Union, KeysView, ValuesView, ItemsView
 
 class ModelConfig:
     """
@@ -59,15 +54,15 @@ class ModelConfig:
         """Check if parameter exists."""
         return key in self.params
 
-    def keys(self) -> Dict[str, Any].KeysView:
+    def keys(self) -> KeysView[str]:
         """Get all parameter keys."""
         return self.params.keys()
 
-    def values(self) -> Dict[str, Any].ValuesView:
+    def values(self) -> ValuesView[Any]:
         """Get all parameter values."""
         return self.params.values()
 
-    def items(self) -> Dict[str, Any].ItemsView:
+    def items(self) -> ItemsView[str, Any]:
         """Get all parameter key-value pairs."""
         return self.params.items()
 
@@ -157,6 +152,31 @@ class ModelConfig:
             raise ValueError(f"verbose must be a non-negative integer, got {value}")
         self.params['verbose'] = value
 
+    # NEW: Experiment-specific properties for runners.py
+    @property
+    def num_runs(self) -> Optional[int]:
+        """Get num_runs parameter for variability studies."""
+        return self.params.get('num_runs')
+
+    @num_runs.setter
+    def num_runs(self, value: int):
+        """Set num_runs parameter with validation."""
+        if not isinstance(value, int) or value <= 0:
+            raise ValueError(f"num_runs must be a positive integer, got {value}")
+        self.params['num_runs'] = value
+
+    @property
+    def epochs_per_run(self) -> Optional[int]:
+        """Get epochs_per_run parameter for variability studies."""
+        return self.params.get('epochs_per_run')
+
+    @epochs_per_run.setter
+    def epochs_per_run(self, value: int):
+        """Set epochs_per_run parameter with validation."""
+        if not isinstance(value, int) or value <= 0:
+            raise ValueError(f"epochs_per_run must be a positive integer, got {value}")
+        self.params['epochs_per_run'] = value
+
     # Factory Methods for Smart Defaults
 
     @classmethod
@@ -196,9 +216,6 @@ class ModelConfig:
     def for_variability_study(cls, base_config: 'ModelConfig', num_runs: int = 5) -> 'ModelConfig':
         """Create config specifically for variability studies."""
         study_config = base_config.copy()
-        study_config.update({
-            'num_runs': num_runs,
-            'epochs_per_run': study_config.get('epochs', 10),
-            # Store original epochs as epochs_per_run for clarity
-        })
+        study_config.set('num_runs', num_runs)
+        study_config.set('epochs_per_run', base_config.get('epochs', 10))
         return study_config

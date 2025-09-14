@@ -5,7 +5,7 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 import pickle
 import os
-from typing import Union, Tuple, List, Any
+from typing import Union, Tuple, List, Any, Optional
 
 def save_object(obj: Any, path: str):
     """Saves a Python object to a file using pickle."""
