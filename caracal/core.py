@@ -6,6 +6,7 @@ import pickle
 from sklearn.metrics import confusion_matrix, accuracy_score
 from typing import Dict, Any, Optional, Tuple, Union
 from abc import ABC, abstractmethod
+from .memory import MemoryManager, managed_memory_context
 
 # Optional TensorFlow imports
 try:
@@ -40,6 +41,7 @@ class BaseModelWrapper(ABC):
         self.model_id = model_id
         self.history: Optional[Any] = None
         self.predictions: Optional[np.ndarray] = None
+        self._memory_manager = MemoryManager(enable_monitoring=True)
 
     def __repr__(self) -> str:
         model_type = self.model.__class__.__name__
@@ -60,7 +62,27 @@ class BaseModelWrapper(ABC):
         This method can be called explicitly to free resources
         before the object is destroyed.
         """
-        self._cleanup_implementation()
+        try:
+            self._cleanup_implementation()
+            cleanup_results = self._memory_manager.cleanup_all(force=True)
+
+            # log significant cleanup events
+            memory_freed = cleanup_results.get('memory_freed_mb', 0)
+            if memory_freed >= 50:
+                print(f"Model cleanup freed {memory_freed:.0f}MB")
+
+            # report cleanup failures
+            cleanup_results_dict = cleanup_results.get('cleanup_results', {})
+            failed_cleaners = [name for name, result in cleanup_results_dict.items()
+                                if not result.get('success', True)]
+            if failed_cleaners:
+                print(f"Warning: Some cleanup operations failed: {failed_cleaners}")
+
+        except Exception as e:
+            print(f"Cleanup warning: {e}")
+
+
+
 
     @abstractmethod
     def _cleanup_implementation(self):
@@ -112,6 +134,18 @@ class BaseModelWrapper(ABC):
         """Loads a model from a file."""
         pass
 
+    @abstractmethod
+    def _cleanup_implementation(self):
+        """Framework-specific cleanup implementation (must be implemented by subclasses)."""
+        pass
+
+    def get_memory_report(self) -> Dict[str, Any]:
+        """Get comprehensive memory usage report (available on all model wrappers)."""
+        return self._memory_manager.get_memory_report()
+
+    def check_memory_and_cleanup_if_needed(self) -> Optional[Dict[str, Any]]:
+        """Check memory usage and cleanup if thresholds exceeded."""
+        return self._memory_manager.check_and_cleanup_if_needed()
 
 # --- CONCRETE IMPLEMENTATIONS ---
 
@@ -370,8 +404,6 @@ if SKLEARN_AVAILABLE:
             """Scikit-learn specific cleanup (minimal)."""
             import gc
             gc.collect()
-
-        # Replace the ScikitLearnModelWrapper.fit() method in core.py with this:
 
         def fit(self, train_data: Union[Tuple[np.ndarray, np.ndarray], Any],
                 validation_data: Optional[Any] = None,

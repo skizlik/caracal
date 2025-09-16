@@ -45,7 +45,8 @@ RUN pip --default-timeout=120 install \
     seaborn \
     scikit-learn \
     scipy \
-    pillow
+    pillow \
+    joblib
 
 # Install other dependencies
 RUN pip --default-timeout=120 install \

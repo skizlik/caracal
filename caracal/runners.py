@@ -11,7 +11,7 @@ from .core import BaseModelWrapper
 from .config import ModelConfig
 from .loggers import BaseLogger
 from .data import DataHandler
-
+from .memory import managed_memory_context
 
 class ExperimentRunner:
     """
@@ -54,17 +54,18 @@ class ExperimentRunner:
             DataFrame with training metrics or None if failed
         """
         self.logger.log_params({'run_num': run_id})
-        self._cleanup_gpu_memory()
+
+        wrapped_model = self.model_builder(self.model_config)
 
         try:
-            wrapped_model = self.model_builder(self.model_config)
+            with managed_memory_context(auto_cleanup=True) as memory_ctx:
 
-            print(f" - Training model {run_id}...")
-            wrapped_model.fit(train_data=self.train_data,
-                              validation_data=self.val_data,
-                              epochs=epochs,
-                              batch_size=self.model_config.get('batch_size', 32),
-                              verbose=self.model_config.get('verbose', 0))
+                print(f" - Training model {run_id}...")
+                wrapped_model.fit(train_data=self.train_data,
+                                validation_data=self.val_data,
+                                epochs=epochs,
+                                batch_size=self.model_config.get('batch_size', 32),
+                                verbose=self.model_config.get('verbose', 0))
 
             if wrapped_model.history:
                 history_df = pd.DataFrame(wrapped_model.history.history)
@@ -91,6 +92,11 @@ class ExperimentRunner:
                     self.final_test_metrics.append(test_metrics)
                     for metric_name, value in test_metrics.items():
                         self.logger.log_metric(f'final_test_{metric_name}', value, step=run_id)
+
+                # Check post-training memory
+                post_cleanup = memory_ctx.check_and_cleanup_if_needed()
+                if post_cleanup and post_cleanup.get('memory_freed_mb', 0) > 50:
+                    print(f" - Run {run_id}: Post-training cleanup freed {post_cleanup['memory_freed_mb']:.0f}MB")
 
                 print(f" - Run {run_id} completed.")
                 return history_df
@@ -139,11 +145,20 @@ class ExperimentRunner:
                 metrics_df = self._run_single_fit(run_id=i + 1, epochs=epochs_per_run)
                 if metrics_df is not None:
                     self.all_runs_metrics.append(metrics_df)
+
         except KeyboardInterrupt:
             print(f"\nKernel interrupted. Displaying results for {len(self.all_runs_metrics)} runs completed.")
+
         finally:
+            # Final comprehensive cleanup
+            print("Performing final cleanup...")
+            # Use any model wrapper instance for final cleanup
+            if hasattr(self, '_last_model') and self._last_model:
+                final_cleanup = self._last_model.cleanup()
+
             self.logger.end_run()
-            return self.all_runs_metrics, self.final_val_accuracies, self.final_test_metrics
+
+        return self.all_runs_metrics, self.final_val_accuracies, self.final_test_metrics
 
 
 class VariabilityStudyResults:
@@ -407,7 +422,7 @@ class VariabilityStudyResults:
 
 def run_variability_study(model_builder, data_handler, model_config,
                           num_runs: int = 5, epochs_per_run: Optional[int] = None,
-                          logger=None) -> VariabilityStudyResults:
+                          logger=None, enable_process_isolation: bool = False) -> VariabilityStudyResults:
     """
     Enhanced variability study that returns a VariabilityStudyResults object
     with methods for easy integration with statistical analysis.

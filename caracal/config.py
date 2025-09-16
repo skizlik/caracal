@@ -181,12 +181,13 @@ class ModelConfig:
 
     @classmethod
     def from_defaults(cls) -> 'ModelConfig':
-        """Returns a config with general, reasonable defaults."""
+        """Returns a config with general, reasonable defaults including memory management."""
         return cls({
             'epochs': 10,
             'batch_size': 32,
             'learning_rate': 0.001,
-            'verbose': 0
+            'verbose': 0,
+            'cleanup_threshold': 0.8
         })
 
     @classmethod
@@ -197,7 +198,8 @@ class ModelConfig:
             'input_shape': input_shape,
             'num_classes': num_classes,
             'loss': 'categorical_crossentropy',
-            'metrics': ['accuracy']
+            'metrics': ['accuracy'],
+            'cleanup_threshold': 0.75  # More aggressive for memory-intensive CNNs
         })
         return base_config
 
@@ -219,3 +221,15 @@ class ModelConfig:
         study_config.set('num_runs', num_runs)
         study_config.set('epochs_per_run', base_config.get('epochs', 10))
         return study_config
+
+    @property
+    def cleanup_threshold(self) -> Optional[float]:
+        """Get cleanup_threshold parameter."""
+        return self.params.get('cleanup_threshold')
+
+    @cleanup_threshold.setter
+    def cleanup_threshold(self, value: float):
+        """Set cleanup threshold with validation."""
+        if not isinstance(value, (float, int)) or not 0.1 <= value <= 1.0:
+            raise ValueError("cleanup_threshold must be between 0.1 and 1.0")
+        self.params['cleanup_threshold'] = float(value)

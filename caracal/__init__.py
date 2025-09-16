@@ -12,6 +12,7 @@ of model performance, experiment tracking, and comprehensive ML workflow managem
 from .config import ModelConfig
 from .core import BaseModelWrapper, TENSORFLOW_AVAILABLE, SKLEARN_AVAILABLE
 from .utils import load_object, save_object, train_val_test_split
+from .memory import MemoryManager, managed_memory_context
 
 # Exception classes (always available)
 from .exceptions import (
@@ -63,6 +64,10 @@ __all__ = [
     'load_object',
     'save_object',
     'train_val_test_split',
+
+    # Memory cleanup
+    'MemoryManager',
+    'managed_memory_context',
 
     # Feature availability flags
     'TENSORFLOW_AVAILABLE',
@@ -278,6 +283,12 @@ def get_feature_availability() -> dict:
             'high_level_comparisons': True
         }
 
+    try:
+        import joblib
+        has_process_isolation = True
+    except ImportError:
+        has_process_isolation = False
+
     return {
         'tensorflow_support': TENSORFLOW_AVAILABLE,
         'sklearn_support': SKLEARN_AVAILABLE,
@@ -288,6 +299,9 @@ def get_feature_availability() -> dict:
         'hyperparameter_tuning': _has_hyperparameter_tuning,
         'explainability': _has_explainability,
         'data_handlers': _data_handlers_loaded,
+        'memory_management': True,
+        'enhanced_memory_management': True,
+        'process_isolation': has_process_isolation,
         'enhanced_experiment_results': True  # VariabilityStudyResults always available
     }
 
@@ -302,7 +316,10 @@ def print_feature_summary():
     # Core framework support
     print("\nCore Framework Support:")
     print(f"  TensorFlow/Keras: {'✓' if features['tensorflow_support'] else '✗'}")
-    print(f"  Scikit-learn:     {'✓' if features['sklearn_support'] else '✗'}")
+    print(f"  Scikit-learn: {'✓' if features['sklearn_support'] else '✗'}")
+    print(f"  Memory Cleanup: ✓")
+    print(f"  Enhanced cleanup system: ✓")
+    print(f"  Process isolation: {'✓' if features['process_isolation'] else '✗ (missing: joblib)'}")
 
     # Data handlers
     print(f"\nData Handlers ({len(features['data_handlers'])}/4):")
