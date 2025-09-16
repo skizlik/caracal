@@ -31,14 +31,14 @@ RUN ln -s /usr/bin/python3 /usr/bin/python
 # Test Python version
 RUN python --version
 
-# Install your library's core dependencies
-RUN pip install \
+# Install library's core dependencies
+RUN pip --default-timeout=120 install \
     tensorflow==2.16.1 \
     jupyterlab \
     poetry
 
-# Install ML packages your notebook needs
-RUN pip install \
+# Install ML packages
+RUN pip --default-timeout=120 install \
     numpy \
     pandas \
     matplotlib \
@@ -47,11 +47,14 @@ RUN pip install \
     scipy \
     pillow
 
-# Install your library's other dependencies
-RUN pip install \
+# Install other dependencies
+RUN pip --default-timeout=120 install \
     hyperopt \
     shap \
-    mlflow
+    mlflow \
+    sphinx \
+    sphinx-rtd-theme \
+    numpydoc
 
 # Set CUDA environment variables
 ENV TF_CPP_MIN_LOG_LEVEL=2

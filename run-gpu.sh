@@ -13,15 +13,25 @@ CONTAINER_PROJECTS_DIR="/home/appuser/projects"
 USER_ID=$(id -u)
 GROUP_ID=$(id -g)
 
-echo "--- Launching JupyterLab container for Caracal development ---"
-echo "Access JupyterLab at http://localhost:8888"
+echo "--- Launching container for Caracal development ---"
 echo "Running as user $USER_ID:$GROUP_ID to maintain proper file ownership"
 echo "Mounting $HOST_PROJECTS_DIR to $CONTAINER_PROJECTS_DIR"
-echo "JupyterLab root: $CONTAINER_PROJECTS_DIR"
-echo "Caracal library: $CONTAINER_PROJECTS_DIR/caracal"
 echo "To exit, stop the process by pressing Ctrl+C"
 
+# Determine the command to run. Default to Jupyter Lab.
+# If a custom command is provided as arguments, use that.
+if [ -z "$@" ]; then
+    # Default command is Jupyter Lab
+    TARGET_CMD="su - appuser -c 'cd /home/appuser/projects && JUPYTER_CONFIG_DIR=/home/appuser/.jupyter JUPYTER_DATA_DIR=/home/appuser/.jupyter JUPYTER_RUNTIME_DIR=/home/appuser/.jupyter/runtime jupyter lab --ip=0.0.0.0 --port=8888 --no-browser'"
+    echo "Access JupyterLab at http://localhost:8888"
+else
+    # Custom command provided, run it as appuser
+    TARGET_CMD="su - appuser -c 'cd /home/appuser/projects && $@'"
+    echo "Running custom command: $@"
+fi
+
 # Create user setup command to run inside container
+# (Moved the pip install -e . here, for reasons explained below)
 USER_SETUP_CMD="
 # Create group if it doesn't exist
 if ! getent group $GROUP_ID >/dev/null 2>&1; then
@@ -39,13 +49,15 @@ fi
 # Change ownership of projects directory to the user
 chown -R appuser:appuser /home/appuser/projects
 
-# Install caracal library from the caracal subdirectory
+# Install caracal library from the caracal subdirectory in editable mode
+# This must happen AFTER appuser is created and ownership is set, 
+# and before the main command (Jupyter or bash) is executed as that user.
 echo 'Installing Caracal library in editable mode...'
 cd /home/appuser/projects/caracal
 pip install -e .
 
-# Switch to user and start JupyterLab from projects root
-su - appuser -c 'cd /home/appuser/projects && JUPYTER_CONFIG_DIR=/home/appuser/.jupyter JUPYTER_DATA_DIR=/home/appuser/.jupyter JUPYTER_RUNTIME_DIR=/home/appuser/.jupyter/runtime jupyter lab --ip=0.0.0.0 --port=8888 --no-browser'
+# Finally, execute the target command
+$TARGET_CMD
 "
 
 # Run container with the setup command
