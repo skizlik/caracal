@@ -1,5 +1,5 @@
 # caracal/__init__.py
-# v.0.0.1
+# v.0.0.2
 
 """
 Caracal: A Machine Learning Framework for Variability and Reproducibility Analysis
@@ -262,7 +262,7 @@ except ImportError:
     _has_explainability = False
 
 # Library version
-__version__ = "0.0.1"
+__version__ = "0.0.2"
 
 
 # Enhanced feature availability summary
@@ -310,7 +310,7 @@ def print_feature_summary():
     """Print a comprehensive summary of available and missing features."""
     features = get_feature_availability()
 
-    print("Caracal v0.0.1 Feature Availability")
+    print("Caracal v0.0.2 Feature Availability")
     print("=" * 40)
 
     # Core framework support
@@ -385,7 +385,7 @@ def install_instructions():
     """Print detailed installation instructions for missing dependencies."""
     features = get_feature_availability()
 
-    print("Caracal v0.0.1 Installation Guide")
+    print("Caracal v0.0.2 Installation Guide")
     print("=" * 35)
 
     instructions = []
@@ -518,7 +518,7 @@ __all__.extend([
 # Quick start guide function
 def quick_start_example():
     """Print a quick start example showing the enhanced workflow."""
-    print("Caracal v0.0.1 Quick Start Example")
+    print("Caracal v0.0.2 Quick Start Example")
     print("=" * 35)
     print("""
 # 1. Run a variability study

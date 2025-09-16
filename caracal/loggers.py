@@ -36,21 +36,26 @@ class BaseLogger:
     print it to the console.
     """
 
-    def __init__(self, verbose: bool = True):
+    def __init__(self, verbose: bool = True, print_params: bool = False,
+                 print_metrics: bool = False):
         self.verbose = verbose
+        self.print_params = print_params
+        self.print_metrics = print_metrics
         self.history: Dict[str, Any] = {'params': {}, 'metrics': []}
 
     def log_params(self, params: Dict[str, Any]):
         """Logs a dictionary of parameters and stores it in history."""
         self.history['params'].update(params)
-        if self.verbose:
-            print(f"Parameters: {self.history['params']}")
+
+        if self.verbose and self.print_params:
+            print(f"Parameters: {params}")
 
     def log_metric(self, key: str, value: float, step: int = 0):
         """Logs a single metric and stores it in history."""
         metric_entry = {'key': key, 'value': value, 'step': step}
         self.history['metrics'].append(metric_entry)
-        if self.verbose:
+
+        if self.verbose and self.print_metrics:
             print(f" - Step {step}: {key} = {value:.4f}")
 
     def log_metrics(self, metrics: Dict[str, float], step: int = 0):

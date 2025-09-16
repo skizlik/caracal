@@ -84,10 +84,6 @@ class BaseModelWrapper(ABC):
 
 
 
-    @abstractmethod
-    def _cleanup_implementation(self):
-        """Framework-specific cleanup implementation."""
-        pass
 
     @abstractmethod
     def fit(self, train_data: Any, validation_data: Optional[Any] = None, **kwargs):
@@ -159,15 +155,8 @@ if TENSORFLOW_AVAILABLE:
 
         def _cleanup_implementation(self):
             """TensorFlow/Keras specific cleanup."""
-            self._cleanup_model_references()
-            self._cleanup_tensorflow_session()
-            try:
-                gpus = tf.config.experimental.list_physical_devices('GPU')
-                if gpus:
-                    for gpu in gpus:
-                        tf.config.experimental.set_memory_growth(gpu, True)
-            except:
-                pass
+            from .memory import deep_clean_gpu
+            deep_clean_gpu()
 
         def _cleanup_model_references(self):
             """Clear model references."""

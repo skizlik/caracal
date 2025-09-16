@@ -58,14 +58,12 @@ class ExperimentRunner:
         wrapped_model = self.model_builder(self.model_config)
 
         try:
-            with managed_memory_context(auto_cleanup=True) as memory_ctx:
-
-                print(f" - Training model {run_id}...")
-                wrapped_model.fit(train_data=self.train_data,
-                                validation_data=self.val_data,
-                                epochs=epochs,
-                                batch_size=self.model_config.get('batch_size', 32),
-                                verbose=self.model_config.get('verbose', 0))
+            print(f" - Training model {run_id}...")
+            wrapped_model.fit(train_data=self.train_data,
+                              validation_data=self.val_data,
+                              epochs=epochs,
+                              batch_size=self.model_config.get('batch_size', 32),
+                              verbose=self.model_config.get('verbose', 0))
 
             if wrapped_model.history:
                 history_df = pd.DataFrame(wrapped_model.history.history)
@@ -93,10 +91,7 @@ class ExperimentRunner:
                     for metric_name, value in test_metrics.items():
                         self.logger.log_metric(f'final_test_{metric_name}', value, step=run_id)
 
-                # Check post-training memory
-                post_cleanup = memory_ctx.check_and_cleanup_if_needed()
-                if post_cleanup and post_cleanup.get('memory_freed_mb', 0) > 50:
-                    print(f" - Run {run_id}: Post-training cleanup freed {post_cleanup['memory_freed_mb']:.0f}MB")
+                wrapped_model.cleanup()
 
                 print(f" - Run {run_id} completed.")
                 return history_df
