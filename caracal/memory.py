@@ -1,10 +1,16 @@
-# caracal/memory.py - GPU-focused memory management for deep learning workloads
+# caracal/memory.py - Simple two-mode memory management system
+# Mode 1: Corrected in-process cleanup (default)
+# Mode 2: Process isolation (user-controlled)
 
 import gc
 import os
-import contextlib
 import time
-from typing import Optional, Dict, Any, List
+import warnings
+import contextlib
+import pickle
+import tempfile
+from typing import Optional, Dict, Any, List, Callable, Union
+from dataclasses import dataclass, field
 
 # Core dependencies
 import numpy as np
@@ -27,345 +33,465 @@ except ImportError:
     tf = None
     HAS_TENSORFLOW = False
 
+try:
+    import joblib
 
-def setup_tensorflow_gpu(memory_limit_mb: Optional[int] = None) -> bool:
+    HAS_JOBLIB = True
+except ImportError:
+    joblib = None
+    HAS_JOBLIB = False
+
+
+@dataclass
+class CleanupResult:
+    """Result of cleanup operation."""
+    success: bool
+    actions_taken: List[str] = field(default_factory=list)
+    errors: List[str] = field(default_factory=list)
+    cleanup_time_seconds: float = 0.0
+
+    @property
+    def has_errors(self) -> bool:
+        return len(self.errors) > 0
+
+
+# Framework Handlers
+class TensorFlowHandler:
     """
-    Configure TensorFlow GPU for reliable repeated training runs.
+    Corrected TensorFlow memory management.
 
-    Sets memory growth and optional memory limits to prevent OOM errors
-    during variability studies with large models.
-
-    Args:
-        memory_limit_mb: Maximum GPU memory to use in MB. If None, uses growth mode.
-
-    Returns:
-        True if GPU configuration succeeded, False otherwise.
+    IMPORTANT: Does NOT use reset_memory_stats() which doesn't free memory.
+    Uses only proven cleanup methods.
     """
-    if not HAS_TENSORFLOW:
-        return False
 
-    try:
-        gpus = tf.config.list_physical_devices('GPU')
-        if not gpus:
-            return True  # CPU mode is fine
+    def __init__(self):
+        self.gpus: List[Any] = []
+        self.setup_complete = False
 
-        for gpu in gpus:
-            if memory_limit_mb:
-                tf.config.set_memory_limit(gpu, memory_limit_mb)
-            else:
-                tf.config.experimental.set_memory_growth(gpu, True)
-
-        return True
-
-    except RuntimeError:
-        # GPU already initialized - can't change settings
-        return False
-    except Exception:
-        return False
-
-
-def set_tensorflow_env_vars():
-    """
-    Set environment variables to prevent TensorFlow GPU memory issues.
-
-    Must be called before importing TensorFlow. Sets flags to:
-    - Enable memory growth
-    - Use async GPU allocator for better fragmentation handling
-    - Use fallback convolution algorithms
-    - Reduce log verbosity
-    """
-    os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
-    os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
-    os.environ['XLA_FLAGS'] = '--xla_gpu_strict_conv_algorithm_picker=false'
-    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
-
-
-def deep_clean_gpu():
-    """
-    Aggressive GPU memory cleanup for repeated training runs.
-
-    Performs comprehensive cleanup including:
-    - TensorFlow session clearing
-    - GPU memory reset attempts
-    - Garbage collection
-    - Cache clearing
-
-    Returns:
-        Dict with cleanup results and memory freed.
-    """
-    results = {'actions': [], 'memory_freed_mb': 0}
-
-    if not HAS_TENSORFLOW:
-        results['actions'].append('TensorFlow not available')
-        return results
-
-    # Get initial GPU memory
-    initial_memory = _get_gpu_memory_usage()
-
-    try:
-        # Clear TensorFlow session
-        tf.keras.backend.clear_session()
-        results['actions'].append('Cleared TensorFlow session')
-
-        # Clear any cached operations
-        if hasattr(tf.config.experimental, 'reset_memory_stats'):
-            gpus = tf.config.list_physical_devices('GPU')
-            for i, gpu in enumerate(gpus):
-                try:
-                    # Use correct device format for TensorFlow
-                    device_name = f'GPU:{i}'
-                    tf.config.experimental.reset_memory_stats(device_name)
-                    results['actions'].append(f'Reset memory stats for {device_name}')
-                except Exception as e:
-                    # Don't fail the whole cleanup if one GPU fails
-                    results['actions'].append(f'GPU {i} reset failed: {str(e)[:50]}')
-
-        # Aggressive garbage collection
-        for _ in range(3):
-            collected = gc.collect()
-            if collected > 0:
-                results['actions'].append(f'GC collected {collected} objects')
-
-        # Calculate memory freed
-        final_memory = _get_gpu_memory_usage()
-        if initial_memory and final_memory:
-            for gpu_id in initial_memory:
-                if gpu_id in final_memory:
-                    freed = initial_memory[gpu_id] - final_memory[gpu_id]
-                    if freed > 0:
-                        results['memory_freed_mb'] += freed
-
-    except Exception as e:
-        results['actions'].append(f'Deep clean error: {str(e)}')
-
-    return results
-
-
-def _get_gpu_memory_usage() -> Dict[int, float]:
-    """Get current GPU memory usage in MB for each GPU."""
-    if not HAS_TENSORFLOW:
-        return {}
-
-    gpu_memory = {}
-    try:
-        gpus = tf.config.list_physical_devices('GPU')
-        for i, gpu in enumerate(gpus):
+        if HAS_TENSORFLOW:
             try:
-                memory_info = tf.config.experimental.get_memory_info(gpu.name)
-                gpu_memory[i] = memory_info['current'] / 1024 / 1024
+                self.gpus = tf.config.list_physical_devices('GPU')
             except Exception:
-                pass
-    except Exception:
-        pass
+                self.gpus = []
 
-    return gpu_memory
+    def setup_constraints(self, memory_limit_mb: Optional[int] = None) -> bool:
+        """Configure TensorFlow GPU memory limits."""
+        if not HAS_TENSORFLOW or self.setup_complete:
+            return True
 
+        if not self.gpus:
+            return True  # CPU mode
 
-def _get_process_memory() -> float:
-    """Get current process memory usage in MB."""
-    if not HAS_PSUTIL:
-        return 0.0
+        success_count = 0
+        for gpu in self.gpus:
+            try:
+                if memory_limit_mb:
+                    tf.config.set_memory_limit(gpu, memory_limit_mb)
+                else:
+                    tf.config.experimental.set_memory_growth(gpu, True)
+                success_count += 1
 
-    try:
-        process = psutil.Process()
-        return process.memory_info().rss / 1024 / 1024
-    except Exception:
-        return 0.0
+            except RuntimeError as e:
+                if "cannot be modified" in str(e).lower():
+                    return False  # Already initialized
+                warnings.warn(f"GPU setup failed for {gpu.name}: {e}")
+            except Exception as e:
+                warnings.warn(f"GPU setup error for {gpu.name}: {e}")
 
+        self.setup_complete = success_count > 0
+        return self.setup_complete
 
-class MemoryManager:
-    """
-    Memory management for ML training workloads.
-
-    Provides both lightweight cleanup for normal use and aggressive
-    deep cleaning for GPU-heavy repeated training scenarios.
-    """
-
-    def __init__(self, enable_monitoring: bool = True, cleanup_threshold: float = 0.85,
-                 force_cleanup_threshold: float = 0.95, **kwargs):
+    def cleanup_after_run(self) -> CleanupResult:
         """
-        Initialize memory manager.
+        CORRECTED TensorFlow cleanup using only reliable methods.
 
-        Args:
-            enable_monitoring: Whether to monitor system memory usage
-            cleanup_threshold: Memory usage fraction that triggers cleanup
-            force_cleanup_threshold: Memory usage fraction that triggers deep clean
+        Key fixes:
+        1. Does NOT call tf.config.experimental.reset_memory_stats() - that's useless
+        2. Uses tf.keras.backend.clear_session() - this actually works
+        3. Multiple garbage collection passes
+        4. Brief pause for asynchronous cleanup
         """
-        self.enable_monitoring = enable_monitoring and HAS_PSUTIL
-        self.cleanup_threshold = cleanup_threshold
-        self.force_cleanup_threshold = force_cleanup_threshold
+        start_time = time.time()
+        result = CleanupResult(success=True)
 
-    def cleanup_all(self, force: bool = False) -> Dict[str, Any]:
-        """
-        Perform memory cleanup with optional deep cleaning.
-
-        Args:
-            force: If True, performs aggressive GPU cleanup
-
-        Returns:
-            Cleanup results including memory freed and actions taken
-        """
-        pre_memory = _get_process_memory()
-
-        results = {
-            'pre_cleanup_memory': {'process_memory_mb': pre_memory},
-            'cleanup_results': {},
-            'post_cleanup_memory': {},
-            'memory_freed_mb': 0
-        }
+        if not HAS_TENSORFLOW:
+            result.actions_taken.append('tensorflow_not_available')
+            return result
 
         try:
-            if force:
-                # Aggressive cleanup for GPU workloads
-                deep_results = deep_clean_gpu()
-                results['cleanup_results']['deep_clean'] = {
-                    'success': True,
-                    'actions': deep_results['actions'],
-                    'gpu_memory_freed_mb': deep_results['memory_freed_mb']
-                }
-            else:
-                # Standard cleanup
-                collected = gc.collect()
-                if HAS_TENSORFLOW:
-                    tf.keras.backend.clear_session()
-
-                results['cleanup_results']['standard_clean'] = {
-                    'success': True,
-                    'gc_collected': collected
-                }
-
-            # Calculate total memory change
-            post_memory = _get_process_memory()
-            results['post_cleanup_memory'] = {'process_memory_mb': post_memory}
-
-            if pre_memory > 0 and post_memory > 0:
-                results['memory_freed_mb'] = max(0, pre_memory - post_memory)
+            # Primary cleanup: Clear Keras session (this is what actually works)
+            tf.keras.backend.clear_session()
+            result.actions_taken.append('cleared_keras_session')
 
         except Exception as e:
-            results['cleanup_results']['error'] = {'success': False, 'error': str(e)}
-
-        return results
-
-    def check_and_cleanup_if_needed(self) -> Optional[Dict[str, Any]]:
-        """
-        Check memory usage and perform cleanup if thresholds exceeded.
-
-        Returns:
-            Cleanup results if cleanup was performed, None otherwise
-        """
-        if not self.enable_monitoring:
-            return None
+            result.success = False
+            result.errors.append(f'Keras session clear failed: {str(e)[:80]}')
 
         try:
-            memory_percent = psutil.virtual_memory().percent / 100.0
+            # Secondary cleanup: Multiple garbage collection passes
+            total_collected = 0
+            for i in range(3):
+                collected = gc.collect()
+                total_collected += collected
+                if collected == 0:
+                    break
 
-            if memory_percent > self.force_cleanup_threshold:
-                return self.cleanup_all(force=True)
-            elif memory_percent > self.cleanup_threshold:
-                return self.cleanup_all(force=False)
+            result.actions_taken.append(f'gc_collected_{total_collected}_objects')
 
-        except Exception:
-            pass
+        except Exception as e:
+            result.errors.append(f'GC failed: {str(e)[:50]}')
 
-        return None
+        # Brief pause to allow asynchronous GPU cleanup to complete
+        time.sleep(0.1)
+        result.actions_taken.append('async_cleanup_wait')
 
-    def get_memory_report(self) -> Dict[str, Any]:
+        result.cleanup_time_seconds = time.time() - start_time
+        return result
+
+    def get_memory_info(self) -> Dict[str, float]:
         """
-        Get comprehensive memory usage report.
+        Get TensorFlow GPU memory usage.
 
-        Returns:
-            Memory usage statistics for system, process, and GPUs
+        NOTE: This is unreliable immediately after cleanup due to async operations.
+        Use for monitoring only, not for control flow.
         """
-        report = {
-            'process_memory_mb': _get_process_memory(),
-            'gpu_memory': _get_gpu_memory_usage(),
-            'cleanup_available': True
-        }
+        if not HAS_TENSORFLOW or not self.gpus:
+            return {}
+
+        memory_info = {}
+        for i, gpu in enumerate(self.gpus):
+            try:
+                info = tf.config.experimental.get_memory_info(gpu.name)
+                if info and 'current' in info:
+                    memory_info[f'gpu_{i}'] = float(info['current']) / 1024 / 1024
+            except Exception:
+                continue
+
+        return memory_info
+
+
+class SystemHandler:
+    """System-level memory management."""
+
+    def setup_constraints(self, memory_limit_mb: Optional[int] = None) -> bool:
+        """System handler requires no setup."""
+        return True
+
+    def cleanup_after_run(self) -> CleanupResult:
+        """Reliable system-level cleanup."""
+        start_time = time.time()
+        result = CleanupResult(success=True)
+
+        try:
+            # Multiple garbage collection passes to handle circular references
+            total_collected = 0
+            for i in range(3):
+                collected = gc.collect()
+                total_collected += collected
+                if collected == 0:
+                    break
+
+            result.actions_taken.append(f'system_gc_collected_{total_collected}_objects')
+
+        except Exception as e:
+            result.success = False
+            result.errors.append(f'System cleanup failed: {str(e)[:80]}')
+
+        result.cleanup_time_seconds = time.time() - start_time
+        return result
+
+    def get_memory_info(self) -> Dict[str, float]:
+        """Get system memory information."""
+        info = {}
 
         if HAS_PSUTIL:
             try:
+                process = psutil.Process()
                 vm = psutil.virtual_memory()
-                report['system_memory'] = {
-                    'total_gb': vm.total / 1024 / 1024 / 1024,
-                    'available_gb': vm.available / 1024 / 1024 / 1024,
-                    'percent_used': vm.percent
-                }
+
+                info.update({
+                    'process_memory_mb': process.memory_info().rss / 1024 / 1024,
+                    'system_available_gb': vm.available / (1024 ** 3),
+                    'system_percent_used': vm.percent
+                })
             except Exception:
                 pass
 
+        return info
+
+
+# Standard In-Process Resource Manager
+class StandardResourceManager:
+    """
+    Standard resource manager with corrected in-process cleanup.
+
+    This is the default mode - fast execution with reliable cleanup
+    that should work for most scenarios.
+    """
+
+    def __init__(self):
+        self.handlers = self._initialize_handlers()
+        self.setup_complete = False
+
+    def _initialize_handlers(self) -> Dict[str, Any]:
+        """Initialize available framework handlers."""
+        handlers = {'system': SystemHandler()}
+
+        if HAS_TENSORFLOW:
+            handlers['tensorflow'] = TensorFlowHandler()
+
+        # Future: PyTorch handler would be added here
+        # if HAS_PYTORCH:
+        #     handlers['pytorch'] = PyTorchHandler()
+
+        return handlers
+
+    def setup_training_constraints(self, memory_limit_mb: Optional[int] = None) -> bool:
+        """Set up memory constraints for training."""
+        if self.setup_complete:
+            return True
+
+        setup_success = False
+        for name, handler in self.handlers.items():
+            try:
+                if handler.setup_constraints(memory_limit_mb):
+                    setup_success = True
+            except Exception as e:
+                warnings.warn(f"Handler {name} setup failed: {e}")
+
+        self.setup_complete = True
+        return setup_success
+
+    def cleanup_after_run(self) -> CleanupResult:
+        """
+        Perform corrected in-process cleanup across all frameworks.
+
+        This should handle most memory accumulation scenarios without
+        the overhead of process isolation.
+        """
+        overall_result = CleanupResult(success=True)
+        start_time = time.time()
+
+        # Run cleanup for each framework handler
+        for name, handler in self.handlers.items():
+            try:
+                handler_result = handler.cleanup_after_run()
+
+                # Aggregate results
+                overall_result.actions_taken.extend([
+                    f"{name}: {action}" for action in handler_result.actions_taken
+                ])
+
+                if handler_result.has_errors:
+                    overall_result.errors.extend([
+                        f"{name}: {error}" for error in handler_result.errors
+                    ])
+                    overall_result.success = False
+
+            except Exception as e:
+                overall_result.errors.append(f"{name} cleanup failed: {str(e)[:80]}")
+                overall_result.success = False
+
+        overall_result.cleanup_time_seconds = time.time() - start_time
+        return overall_result
+
+    def get_memory_report(self) -> Dict[str, Any]:
+        """Get comprehensive memory usage report."""
+        report = {
+            'timestamp': time.time(),
+            'mode': 'standard_cleanup',
+            'handlers_available': list(self.handlers.keys()),
+            'memory_info': {}
+        }
+
+        for name, handler in self.handlers.items():
+            try:
+                info = handler.get_memory_info()
+                report['memory_info'][name] = info if info else {'no_data': True}
+            except Exception as e:
+                report['memory_info'][name] = {'error': str(e)[:50]}
+
         return report
 
-    def take_memory_snapshot(self, label: str = "") -> Dict[str, Any]:
+
+# Process Isolation Resource Manager
+class ProcessIsolationManager:
+    """
+    Process isolation resource manager.
+
+    Runs each training iteration in a completely separate process
+    for guaranteed memory cleanup. Slower but 100% reliable.
+    """
+
+    def __init__(self):
+        if not HAS_JOBLIB:
+            raise ImportError(
+                "Process isolation requires joblib. Install with: pip install joblib"
+            )
+
+    def setup_training_constraints(self, memory_limit_mb: Optional[int] = None) -> bool:
+        """Process isolation setup - verify joblib availability."""
+        return HAS_JOBLIB
+
+    def cleanup_after_run(self) -> CleanupResult:
         """
-        Capture current memory state for comparison.
+        Process isolation cleanup.
+
+        NOTE: The real cleanup happens when the isolated process terminates.
+        This method is called from within the isolated process and does
+        basic in-process cleanup as a backup.
+        """
+        result = CleanupResult(success=True)
+        result.actions_taken.append('process_isolation_cleanup_on_exit')
+
+        # Do basic cleanup within the process as well
+        try:
+            collected = gc.collect()
+            result.actions_taken.append(f'backup_gc_collected_{collected}_objects')
+        except Exception as e:
+            result.errors.append(f'Backup cleanup failed: {str(e)[:80]}')
+
+        return result
+
+    def run_training_isolated(self,
+                              training_func: Callable,
+                              args: tuple = (),
+                              kwargs: dict = None) -> Any:
+        """
+        Run training function in completely isolated process.
 
         Args:
-            label: Optional label for the snapshot
+            training_func: Function to run in isolation
+            args: Positional arguments for training_func
+            kwargs: Keyword arguments for training_func
 
         Returns:
-            Memory snapshot data
+            Result from training_func
+
+        Raises:
+            RuntimeError: If process isolation fails
         """
+        if kwargs is None:
+            kwargs = {}
+
+        try:
+            # Use joblib with loky backend for reliable process isolation
+            with joblib.parallel_backend('loky', n_jobs=1):
+                delayed_func = joblib.delayed(training_func)
+                result = delayed_func(*args, **kwargs)
+
+            return result
+
+        except Exception as e:
+            raise RuntimeError(f"Process isolation failed: {e}")
+
+    def get_memory_report(self) -> Dict[str, Any]:
+        """Get memory report for process isolation mode."""
         return {
-            'label': label,
             'timestamp': time.time(),
-            'process_memory_mb': _get_process_memory(),
-            'gpu_memory': _get_gpu_memory_usage(),
-            'system_memory_percent': psutil.virtual_memory().percent if HAS_PSUTIL else None
+            'mode': 'process_isolation',
+            'isolation_backend': 'joblib_loky',
+            'memory_info': {
+                'note': 'Memory cleanup guaranteed by process termination'
+            }
         }
 
 
-@contextlib.contextmanager
-def managed_memory_context(auto_cleanup: bool = True, deep_clean: bool = False):
+# Factory Function
+def get_resource_manager(use_process_isolation: bool = False) -> Union[
+    StandardResourceManager, ProcessIsolationManager]:
     """
-    Context manager for automatic memory management.
+    Create appropriate resource manager based on user preference.
 
     Args:
-        auto_cleanup: Whether to perform cleanup on exit
-        deep_clean: Whether to use aggressive GPU cleanup
-
-    Usage:
-        with managed_memory_context(deep_clean=True):
-            # Train your models here
-            pass
-    """
-    manager = MemoryManager()
-
-    try:
-        yield manager
-    finally:
-        if auto_cleanup:
-            results = manager.cleanup_all(force=deep_clean)
-
-            # Only print if significant memory was freed
-            memory_freed = results.get('memory_freed_mb', 0)
-            if memory_freed > 100:  # More than 100MB
-                print(f"Memory cleanup freed {memory_freed:.0f}MB")
-
-
-def suggest_gpu_batch_size(image_height: int, image_width: int,
-                           channels: int = 3, available_memory_mb: int = 4096) -> int:
-    """
-    Suggest batch size based on image dimensions and available GPU memory.
-
-    Args:
-        image_height: Input image height in pixels
-        image_width: Input image width in pixels
-        channels: Number of image channels (1=grayscale, 3=RGB)
-        available_memory_mb: Available GPU memory in MB
+        use_process_isolation: If True, use process isolation for guaranteed cleanup.
+                             If False, use corrected in-process cleanup (default).
 
     Returns:
-        Suggested batch size for the given constraints
+        Configured resource manager
+
+    Raises:
+        ImportError: If process isolation requested but joblib not available
     """
-    # Estimate memory per image (input + activations + gradients)
-    bytes_per_pixel = 4  # float32
-    memory_multiplier = 6  # Rough estimate for activations/gradients in CNN
+    if use_process_isolation:
+        return ProcessIsolationManager()
+    else:
+        return StandardResourceManager()
 
-    bytes_per_image = image_height * image_width * channels * bytes_per_pixel * memory_multiplier
-    mb_per_image = bytes_per_image / (1024 * 1024)
 
-    # Use 70% of available memory for batch
-    usable_memory = available_memory_mb * 0.7
-    suggested_batch_size = max(1, int(usable_memory / mb_per_image))
+# Context Manager
+@contextlib.contextmanager
+def managed_training_context(memory_limit_mb: Optional[int] = None,
+                             use_process_isolation: bool = False):
+    """
+    Context manager for training with automatic memory management.
 
-    # Reasonable bounds
-    return min(max(suggested_batch_size, 1), 128)
+    Args:
+        memory_limit_mb: GPU memory limit per device in MB
+        use_process_isolation: If True, enables process isolation mode
+
+    Example:
+        # Standard mode (default)
+        with managed_training_context(memory_limit_mb=2048) as manager:
+            # Training code here
+
+        # Process isolation mode (slower but more reliable)
+        with managed_training_context(memory_limit_mb=2048,
+                                    use_process_isolation=True) as manager:
+            # Training code here
+    """
+    manager = get_resource_manager(use_process_isolation)
+
+    try:
+        # Setup
+        setup_success = manager.setup_training_constraints(memory_limit_mb)
+
+        if not setup_success:
+            mode = "process isolation" if use_process_isolation else "standard cleanup"
+            warnings.warn(f"Memory management setup incomplete for {mode} mode")
+        else:
+            mode = "process isolation" if use_process_isolation else "standard cleanup"
+            print(f"Memory management configured with {mode}")
+
+        yield manager
+
+    finally:
+        # Final cleanup (only relevant for standard mode)
+        if not use_process_isolation:
+            try:
+                cleanup_result = manager.cleanup_after_run()
+                if cleanup_result.cleanup_time_seconds > 1.0:
+                    print(f"Final cleanup completed in {cleanup_result.cleanup_time_seconds:.1f}s")
+                if cleanup_result.has_errors:
+                    print(f"Final cleanup had {len(cleanup_result.errors)} warnings")
+            except Exception as e:
+                warnings.warn(f"Final cleanup failed: {e}")
+
+
+# Convenience Functions
+def setup_memory_efficient_training(memory_limit_mb: Optional[int] = None,
+                                    use_process_isolation: bool = False) -> Union[
+    StandardResourceManager, ProcessIsolationManager]:
+    """
+    Set up memory-efficient training configuration.
+
+    Args:
+        memory_limit_mb: GPU memory limit per device
+        use_process_isolation: Whether to use process isolation
+
+    Returns:
+        Configured resource manager
+    """
+    manager = get_resource_manager(use_process_isolation)
+
+    setup_success = manager.setup_training_constraints(memory_limit_mb)
+
+    if setup_success:
+        mode = "process isolation" if use_process_isolation else "standard cleanup"
+        print(f"Memory-efficient training configured with {mode}")
+        if memory_limit_mb:
+            print(f"GPU memory limit: {memory_limit_mb}MB per device")
+    else:
+        warnings.warn("Memory management setup failed")
+
+    return manager

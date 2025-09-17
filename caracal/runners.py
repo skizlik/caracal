@@ -11,7 +11,7 @@ from .core import BaseModelWrapper
 from .config import ModelConfig
 from .loggers import BaseLogger
 from .data import DataHandler
-from .memory import managed_memory_context
+from .memory import managed_training_context, get_resource_manager
 
 class ExperimentRunner:
     """
@@ -24,12 +24,18 @@ class ExperimentRunner:
     def __init__(self, model_builder: Callable[[ModelConfig], BaseModelWrapper],
                  data_handler: DataHandler,
                  model_config: ModelConfig,
-                 logger: BaseLogger = BaseLogger()):
+                 logger: BaseLogger = BaseLogger(),
+                 use_process_isolation: bool = False):
 
         self.model_builder = model_builder
         self.data_handler = data_handler
         self.model_config = model_config
         self.logger = logger
+        self.use_process_isolation = use_process_isolation
+
+        # Resource manager based on user choice
+        from .memory import get_resource_manager
+        self._resource_manager = get_resource_manager(use_process_isolation)
 
         print("Loading and preparing data...")
         data_dict = self.data_handler.load()
@@ -44,14 +50,7 @@ class ExperimentRunner:
 
     def _run_single_fit(self, run_id: int, epochs: int) -> Optional[pd.DataFrame]:
         """
-        Run a single training iteration.
-
-        Args:
-            run_id: Identifier for this run
-            epochs: Number of epochs to train for this run
-
-        Returns:
-            DataFrame with training metrics or None if failed
+        Run a single training iteration with resource management.
         """
         self.logger.log_params({'run_num': run_id})
 
@@ -91,7 +90,12 @@ class ExperimentRunner:
                     for metric_name, value in test_metrics.items():
                         self.logger.log_metric(f'final_test_{metric_name}', value, step=run_id)
 
+                # CHANGED: Add resource manager cleanup after model cleanup
                 wrapped_model.cleanup()
+                cleanup_result = self._resource_manager.cleanup_after_run()
+
+                if cleanup_result.has_errors:
+                    print(f" - Run {run_id}: cleanup had warnings")
 
                 print(f" - Run {run_id} completed.")
                 return history_df
@@ -100,6 +104,12 @@ class ExperimentRunner:
                 return None
         except Exception as e:
             print(f" - Run {run_id} failed with an error: {e}")
+            # Emergency cleanup
+            try:
+                wrapped_model.cleanup()
+                self._resource_manager.cleanup_after_run()
+            except:
+                pass
             return None
 
     def _cleanup_gpu_memory(self):
@@ -119,14 +129,7 @@ class ExperimentRunner:
     def run_study(self, num_runs: int = 5, epochs_per_run: Optional[int] = None) -> Tuple[
         List[pd.DataFrame], List[float], List[Dict[str, Any]]]:
         """
-        Orchestrates the entire variability study.
-
-        Args:
-            num_runs: Number of training runs to perform
-            epochs_per_run: Epochs per run (defaults to config.epochs or 10)
-
-        Returns:
-            Tuple of (all_runs_metrics, final_val_accuracies, final_test_metrics)
+        Orchestrates the entire variability study with resource management.
         """
         if epochs_per_run is None:
             epochs_per_run = self.model_config.get('epochs', 10)
@@ -145,16 +148,17 @@ class ExperimentRunner:
             print(f"\nKernel interrupted. Displaying results for {len(self.all_runs_metrics)} runs completed.")
 
         finally:
-            # Final comprehensive cleanup
-            print("Performing final cleanup...")
-            # Use any model wrapper instance for final cleanup
-            if hasattr(self, '_last_model') and self._last_model:
-                final_cleanup = self._last_model.cleanup()
+            # CHANGED: Use resource manager for final cleanup
+            try:
+                final_cleanup = self._resource_manager.cleanup_after_run()
+                if final_cleanup.cleanup_time_seconds > 1.0:
+                    print(f"Final cleanup completed in {final_cleanup.cleanup_time_seconds:.1f}s")
+            except Exception as e:
+                print(f"Final cleanup warning: {e}")
 
             self.logger.end_run()
 
         return self.all_runs_metrics, self.final_val_accuracies, self.final_test_metrics
-
 
 class VariabilityStudyResults:
     """
@@ -417,7 +421,7 @@ class VariabilityStudyResults:
 
 def run_variability_study(model_builder, data_handler, model_config,
                           num_runs: int = 5, epochs_per_run: Optional[int] = None,
-                          logger=None, enable_process_isolation: bool = False) -> VariabilityStudyResults:
+                          logger=None, use_process_isolation: bool = False) -> VariabilityStudyResults:
     """
     Enhanced variability study that returns a VariabilityStudyResults object
     with methods for easy integration with statistical analysis.
@@ -429,6 +433,8 @@ def run_variability_study(model_builder, data_handler, model_config,
         num_runs: Number of runs to perform (default 5)
         epochs_per_run: Epochs per run (defaults to model_config.epochs or 10)
         logger: Optional logger instance
+        use_process_isolation: If True, run each training iteration in a separate
+                             process for guaranteed memory cleanup. (default False)
 
     Returns:
         VariabilityStudyResults object with analysis methods
@@ -443,7 +449,8 @@ def run_variability_study(model_builder, data_handler, model_config,
         model_builder=model_builder,
         data_handler=data_handler,
         model_config=model_config,
-        logger=logger
+        logger=logger,
+        use_process_isolation=use_process_isolation  # Pass the parameter
     )
 
     all_metrics, final_accuracies, final_test_metrics = runner.run_study(

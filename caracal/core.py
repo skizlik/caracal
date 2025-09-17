@@ -6,7 +6,7 @@ import pickle
 from sklearn.metrics import confusion_matrix, accuracy_score
 from typing import Dict, Any, Optional, Tuple, Union
 from abc import ABC, abstractmethod
-from .memory import MemoryManager, managed_memory_context
+from .memory import get_resource_manager
 
 # Optional TensorFlow imports
 try:
@@ -41,7 +41,7 @@ class BaseModelWrapper(ABC):
         self.model_id = model_id
         self.history: Optional[Any] = None
         self.predictions: Optional[np.ndarray] = None
-        self._memory_manager = MemoryManager(enable_monitoring=True)
+        self._resource_manager = get_resource_manager(use_process_isolation=False)
 
     def __repr__(self) -> str:
         model_type = self.model.__class__.__name__
@@ -58,32 +58,21 @@ class BaseModelWrapper(ABC):
     def cleanup(self):
         """
         Clean up resources used by this model.
-
-        This method can be called explicitly to free resources
-        before the object is destroyed.
         """
         try:
             self._cleanup_implementation()
-            cleanup_results = self._memory_manager.cleanup_all(force=True)
+            # CHANGED: Use new resource manager cleanup
+            cleanup_result = self._resource_manager.cleanup_after_run()
 
-            # log significant cleanup events
-            memory_freed = cleanup_results.get('memory_freed_mb', 0)
-            if memory_freed >= 50:
-                print(f"Model cleanup freed {memory_freed:.0f}MB")
+            # Report significant cleanup events
+            if cleanup_result.cleanup_time_seconds > 1.0:
+                print(f"Model cleanup completed in {cleanup_result.cleanup_time_seconds:.1f}s")
 
-            # report cleanup failures
-            cleanup_results_dict = cleanup_results.get('cleanup_results', {})
-            failed_cleaners = [name for name, result in cleanup_results_dict.items()
-                                if not result.get('success', True)]
-            if failed_cleaners:
-                print(f"Warning: Some cleanup operations failed: {failed_cleaners}")
+            if cleanup_result.has_errors:
+                print(f"Model cleanup had {len(cleanup_result.errors)} warnings")
 
         except Exception as e:
             print(f"Cleanup warning: {e}")
-
-
-
-
 
     @abstractmethod
     def fit(self, train_data: Any, validation_data: Optional[Any] = None, **kwargs):

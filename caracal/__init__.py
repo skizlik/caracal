@@ -12,7 +12,6 @@ of model performance, experiment tracking, and comprehensive ML workflow managem
 from .config import ModelConfig
 from .core import BaseModelWrapper, TENSORFLOW_AVAILABLE, SKLEARN_AVAILABLE
 from .utils import load_object, save_object, train_val_test_split
-from .memory import MemoryManager, managed_memory_context
 
 # Exception classes (always available)
 from .exceptions import (
