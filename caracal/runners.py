@@ -213,7 +213,7 @@ class VariabilityStudyResults:
         """Number of runs in the study."""
         return len(self.all_runs_metrics)
 
-    def get_final_metrics(self, metric_name: str = 'val_accuracy') -> Dict[str, float]:
+    def get_final_metrics(self, metric_name: str = 'val_accuracy') -> Dict[str, pd.Series]:
         """
         Extract final metric values in format ready for analysis.py functions.
 
@@ -221,7 +221,7 @@ class VariabilityStudyResults:
             metric_name: Name of metric to extract ('val_accuracy', 'val_loss', etc.)
 
         Returns:
-            Dictionary mapping run names to final metric values
+            Dictionary mapping run names to pandas Series containing the final metric value
 
         Example:
             >>> results = run_variability_study(...)
@@ -241,9 +241,9 @@ class VariabilityStudyResults:
                     available_metrics = list(run_df.columns)
                     raise ValueError(f"Metric '{metric_name}' not found. Available: {available_metrics}")
 
-        # Create dictionary with run names
+        # Create dictionary with run names and convert each value to a pandas Series
         run_names = [f'run_{i + 1}' for i in range(len(values))]
-        return dict(zip(run_names, values))
+        return {name: pd.Series([value]) for name, value in zip(run_names, values)}
 
     def get_final_metrics_series(self, metric_name: str = 'val_accuracy') -> pd.Series:
         """

@@ -495,3 +495,13 @@ def setup_memory_efficient_training(memory_limit_mb: Optional[int] = None,
         warnings.warn("Memory management setup failed")
 
     return manager
+
+def deep_clean_gpu():
+    """Deep GPU memory cleanup for TensorFlow."""
+    if HAS_TENSORFLOW:
+        try:
+            tf.keras.backend.clear_session()
+            import gc
+            gc.collect()
+        except Exception:
+            pass
