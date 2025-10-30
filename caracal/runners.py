@@ -1,462 +1,586 @@
 # caracal/runners.py
+"""
+Experiment runners for variability studies with memory management.
+Supports both standard and process-isolated execution modes.
+"""
 
 import gc
+import warnings
 import numpy as np
 import pandas as pd
-import tensorflow as tf
-
 from typing import Callable, Dict, Any, List, Optional, Tuple, Union
+from dataclasses import dataclass
 
 from .core import BaseModelWrapper
 from .config import ModelConfig
-from .loggers import BaseLogger
 from .data import DataHandler
-from .memory import managed_training_context, get_resource_manager
+from .loggers import BaseLogger
+from .memory import get_memory_manager, get_memory_info
+
+# Optional TensorFlow for cleanup
+try:
+    import tensorflow as tf
+
+    HAS_TENSORFLOW = True
+except ImportError:
+    tf = None
+    HAS_TENSORFLOW = False
+
 
 class ExperimentRunner:
     """
-    An engine for running a variability study across multiple model fits.
+    Engine for running variability studies with memory management.
 
-    This class orchestrates the training of a model multiple times to assess
-    the stability and variability of its performance.
+    Supports two execution modes:
+    1. Standard: Fast in-process training with best-effort cleanup
+    2. Process isolation: Each run in subprocess for guaranteed memory cleanup
     """
 
-    def __init__(self, model_builder: Callable[[ModelConfig], BaseModelWrapper],
+    def __init__(self,
+                 model_builder: Callable[[ModelConfig], BaseModelWrapper],
                  data_handler: DataHandler,
                  model_config: ModelConfig,
-                 logger: BaseLogger = BaseLogger(),
-                 use_process_isolation: bool = False):
+                 logger: Optional[BaseLogger] = None,
+                 use_process_isolation: bool = False,
+                 gpu_memory_limit: Optional[int] = None,
+                 verbose: bool = True):
+        """
+        Initialize experiment runner.
 
+        Args:
+            model_builder: Function that creates a model from config
+            data_handler: Handler for data loading and preparation
+            model_config: Configuration for model training
+            logger: Logger for metrics and parameters
+            use_process_isolation: If True, run each training in subprocess
+            gpu_memory_limit: GPU memory limit in MB (None = no limit)
+            verbose: If True, print progress messages
+        """
         self.model_builder = model_builder
         self.data_handler = data_handler
         self.model_config = model_config
-        self.logger = logger
+        self.logger = logger or BaseLogger()
         self.use_process_isolation = use_process_isolation
+        self.gpu_memory_limit = gpu_memory_limit
+        self.verbose = verbose
 
-        # Resource manager based on user choice
-        from .memory import get_resource_manager
-        self._resource_manager = get_resource_manager(use_process_isolation)
+        # Initialize memory manager
+        self.memory_manager = get_memory_manager(
+            use_process_isolation=use_process_isolation,
+            gpu_memory_limit=gpu_memory_limit
+        )
 
-        print("Loading and preparing data...")
-        data_dict = self.data_handler.load()
+        # Setup memory constraints for standard mode
+        if not use_process_isolation:
+            setup_success = self.memory_manager.setup()
+            if not setup_success and verbose:
+                warnings.warn(
+                    "Memory setup incomplete. Consider using process isolation "
+                    "for better memory control: use_process_isolation=True"
+                )
 
-        self.train_data = data_dict['train_data']
-        self.val_data = data_dict.get('val_data')
-        self.test_data = data_dict.get('test_data')
+        # Load and prepare data
+        if verbose:
+            print("Loading and preparing data...")
 
+        try:
+            data_dict = self.data_handler.load()
+            self.train_data = data_dict['train_data']
+            self.val_data = data_dict.get('val_data')
+            self.test_data = data_dict.get('test_data')
+
+            if verbose:
+                print(f"Data loaded successfully")
+                if self.val_data is None:
+                    print("Warning: No validation data provided")
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to load data: {e}")
+
+        # Initialize result storage
         self.all_runs_metrics: List[pd.DataFrame] = []
         self.final_val_accuracies: List[float] = []
         self.final_test_metrics: List[Dict[str, Any]] = []
+        self.failed_runs: List[int] = []
+
+        # Validate process isolation if enabled
+        if use_process_isolation:
+            self._validate_process_isolation()
+
+    def _validate_process_isolation(self):
+        """Validate that process isolation can work with current setup."""
+        import pickle
+
+        # Check if model builder is picklable
+        try:
+            pickle.dumps(self.model_builder)
+        except Exception as e:
+            raise ValueError(
+                f"model_builder must be picklable for process isolation: {e}"
+            )
+
+        # Check if data is picklable (warn if large)
+        try:
+            import sys
+            data_size = sys.getsizeof(pickle.dumps(self.train_data))
+            if data_size > 500_000_000:  # 500MB
+                warnings.warn(
+                    f"Training data is large ({data_size / 1e6:.0f}MB). "
+                    "Process isolation may use significant memory for serialization."
+                )
+        except Exception:
+            warnings.warn(
+                "Could not determine data size. Process isolation may have issues "
+                "with non-picklable data types like tf.data.Dataset"
+            )
 
     def _run_single_fit(self, run_id: int, epochs: int) -> Optional[pd.DataFrame]:
         """
-        Run a single training iteration with resource management.
+        Run a single training iteration.
+
+        Args:
+            run_id: Unique identifier for this run
+            epochs: Number of epochs to train
+
+        Returns:
+            DataFrame with training history or None if failed
         """
-        self.logger.log_params({'run_num': run_id})
+        if self.use_process_isolation:
+            return self._run_single_fit_isolated(run_id, epochs)
+        else:
+            return self._run_single_fit_standard(run_id, epochs)
 
-        wrapped_model = self.model_builder(self.model_config)
+    def _run_single_fit_isolated(self, run_id: int, epochs: int) -> Optional[pd.DataFrame]:
+        """Execute training in isolated subprocess."""
+        if self.verbose:
+            print(f" - Run {run_id}: Starting in isolated process...")
 
-        try:
-            print(f" - Training model {run_id}...")
-            wrapped_model.fit(train_data=self.train_data,
-                              validation_data=self.val_data,
-                              epochs=epochs,
-                              batch_size=self.model_config.get('batch_size', 32),
-                              verbose=self.model_config.get('verbose', 0))
+        # Log run start
+        self.logger.log_params({'run_id': run_id, 'mode': 'isolated'})
 
-            if wrapped_model.history:
-                history_df = pd.DataFrame(wrapped_model.history.history)
+        # Execute in subprocess
+        result = self.memory_manager.run_isolated(
+            _isolated_training_function,
+            args=(
+                self.model_builder,
+                self.model_config,
+                self.train_data,
+                self.val_data,
+                self.test_data,
+                epochs,
+                run_id
+            )
+        )
+
+        # Process results
+        if result['success']:
+            try:
+                # Extract history
+                history_data = result['result']['history']
+                if not history_data:
+                    if self.verbose:
+                        print(f" - Run {run_id}: No training history returned")
+                    self.failed_runs.append(run_id)
+                    return None
+
+                # Create DataFrame
+                history_df = pd.DataFrame(history_data)
                 history_df['run_num'] = run_id
-                history_df['epoch'] = history_df.index + 1
+                history_df['epoch'] = range(1, len(history_df) + 1)
 
+                # Standardize column names
                 history_df.rename(columns={
                     'accuracy': 'train_accuracy',
-                    'loss': 'train_loss',
-                    'val_accuracy': 'val_accuracy',
-                    'val_loss': 'val_loss'
+                    'loss': 'train_loss'
                 }, inplace=True)
 
-                if self.val_data is not None and 'val_accuracy' in history_df.columns:
-                    final_val_acc = history_df['val_accuracy'].iloc[-1]
+                # Store validation accuracy
+                if 'val_accuracy' in history_df.columns:
+                    final_val_acc = float(history_df['val_accuracy'].iloc[-1])
                     self.final_val_accuracies.append(final_val_acc)
                     self.logger.log_metric('final_val_accuracy', final_val_acc, step=run_id)
-                else:
-                    final_val_acc = float('nan')
-                    self.logger.log_metric('final_val_accuracy', final_val_acc, step=run_id)
 
-                if self.test_data is not None:
-                    test_metrics = wrapped_model.evaluate(data=self.test_data)
+                # Store test metrics
+                test_metrics = result['result'].get('test_metrics')
+                if test_metrics:
                     self.final_test_metrics.append(test_metrics)
-                    for metric_name, value in test_metrics.items():
-                        self.logger.log_metric(f'final_test_{metric_name}', value, step=run_id)
+                    for key, value in test_metrics.items():
+                        self.logger.log_metric(f'final_test_{key}', value, step=run_id)
 
-                # CHANGED: Add resource manager cleanup after model cleanup
-                wrapped_model.cleanup()
-                cleanup_result = self._resource_manager.cleanup_after_run()
+                if self.verbose:
+                    print(f" - Run {run_id}: Completed successfully (isolated)")
 
-                if cleanup_result.has_errors:
-                    print(f" - Run {run_id}: cleanup had warnings")
-
-                print(f" - Run {run_id} completed.")
                 return history_df
-            else:
-                print(f" - Run {run_id} failed to produce a training history.")
+
+            except Exception as e:
+                if self.verbose:
+                    print(f" - Run {run_id}: Failed to process results: {e}")
+                self.failed_runs.append(run_id)
                 return None
-        except Exception as e:
-            print(f" - Run {run_id} failed with an error: {e}")
-            # Emergency cleanup
-            try:
-                wrapped_model.cleanup()
-                self._resource_manager.cleanup_after_run()
-            except:
-                pass
+        else:
+            # Training failed
+            error_msg = result.get('error', 'Unknown error')
+            if self.verbose:
+                print(f" - Run {run_id}: Failed - {error_msg}")
+                if 'traceback' in result and self.verbose:
+                    print(f"   Traceback: {result['traceback'][:500]}")
+
+            self.failed_runs.append(run_id)
             return None
 
-    def _cleanup_gpu_memory(self):
-        """Force GPU memory cleanup between training runs"""
-        tf.keras.backend.clear_session()
-        gc.collect()
+    def _run_single_fit_standard(self, run_id: int, epochs: int) -> Optional[pd.DataFrame]:
+        """Execute training in standard mode (in-process)."""
+        if self.verbose:
+            print(f" - Run {run_id}: Training...")
 
+        # Log run start
+        self.logger.log_params({'run_id': run_id, 'mode': 'standard'})
+
+        wrapped_model = None
         try:
-            gpus = tf.config.experimental.list_physical_devices('GPU')
-            if gpus:
-                for gpu in gpus:
-                    tf.config.experimental.reset_memory_growth(gpu)
-                    tf.config.experimental.set_memory_growth(gpu, True)
-        except:
-            pass
+            # Build model
+            wrapped_model = self.model_builder(self.model_config)
 
-    def run_study(self, num_runs: int = 5, epochs_per_run: Optional[int] = None) -> Tuple[
+            # Train
+            wrapped_model.fit(
+                train_data=self.train_data,
+                validation_data=self.val_data,
+                epochs=epochs,
+                batch_size=self.model_config.get('batch_size', 32),
+                verbose=self.model_config.get('verbose', 0)
+            )
+
+            # Extract history
+            if not hasattr(wrapped_model, 'history') or wrapped_model.history is None:
+                if self.verbose:
+                    print(f" - Run {run_id}: No training history produced")
+                self.failed_runs.append(run_id)
+                return None
+
+            # Create DataFrame from history
+            if hasattr(wrapped_model.history, 'history'):
+                history_dict = wrapped_model.history.history
+            else:
+                history_dict = wrapped_model.history
+
+            history_df = pd.DataFrame(history_dict)
+            history_df['run_num'] = run_id
+            history_df['epoch'] = range(1, len(history_df) + 1)
+
+            # Standardize column names
+            history_df.rename(columns={
+                'accuracy': 'train_accuracy',
+                'loss': 'train_loss'
+            }, inplace=True)
+
+            # Store validation accuracy
+            if self.val_data is not None and 'val_accuracy' in history_df.columns:
+                final_val_acc = float(history_df['val_accuracy'].iloc[-1])
+                self.final_val_accuracies.append(final_val_acc)
+                self.logger.log_metric('final_val_accuracy', final_val_acc, step=run_id)
+
+            # Evaluate on test data
+            if self.test_data is not None:
+                try:
+                    test_metrics = wrapped_model.evaluate(data=self.test_data)
+                    self.final_test_metrics.append(test_metrics)
+                    for key, value in test_metrics.items():
+                        self.logger.log_metric(f'final_test_{key}', value, step=run_id)
+                except Exception as e:
+                    if self.verbose:
+                        print(f"   Warning: Test evaluation failed: {e}")
+
+            if self.verbose:
+                print(f" - Run {run_id}: Completed successfully")
+
+            return history_df
+
+        except Exception as e:
+            if self.verbose:
+                print(f" - Run {run_id}: Failed with error: {e}")
+            self.failed_runs.append(run_id)
+            return None
+
+        finally:
+            # Cleanup
+            if wrapped_model is not None:
+                try:
+                    if hasattr(wrapped_model, 'cleanup'):
+                        wrapped_model.cleanup()
+                    del wrapped_model
+                except:
+                    pass
+
+            # Perform memory cleanup
+            cleanup_result = self.memory_manager.cleanup()
+            if self.verbose and cleanup_result.memory_freed_mb:
+                if cleanup_result.memory_freed_mb > 10:  # Only report significant cleanup
+                    print(f"   Freed {cleanup_result.memory_freed_mb:.1f}MB")
+
+    def run_study(self, num_runs: int = 5,
+                  epochs_per_run: Optional[int] = None,
+                  stop_on_failure_rate: float = 0.5) -> Tuple[
         List[pd.DataFrame], List[float], List[Dict[str, Any]]]:
         """
-        Orchestrates the entire variability study with resource management.
+        Execute the complete variability study.
+
+        Args:
+            num_runs: Number of training runs to perform
+            epochs_per_run: Epochs per run (defaults to config.epochs)
+            stop_on_failure_rate: Stop if failure rate exceeds this threshold
+
+        Returns:
+            Tuple of (all_runs_metrics, final_val_accuracies, final_test_metrics)
         """
         if epochs_per_run is None:
             epochs_per_run = self.model_config.get('epochs', 10)
 
-        print(f"Starting Variability Study for {num_runs} runs.")
+        # Log study parameters
+        self.logger.log_params({
+            'num_runs': num_runs,
+            'epochs_per_run': epochs_per_run,
+            'use_process_isolation': self.use_process_isolation,
+            'gpu_memory_limit': self.gpu_memory_limit
+        })
         self.logger.log_params(self.model_config.params)
-        self.logger.log_params({'num_runs': num_runs, 'epochs_per_run': epochs_per_run})
 
+        # Print study configuration
+        if self.verbose:
+            mode = "with process isolation" if self.use_process_isolation else "in standard mode"
+            print(f"\nStarting Variability Study")
+            print(f"  Runs: {num_runs}")
+            print(f"  Epochs per run: {epochs_per_run}")
+            print(f"  Execution mode: {mode}")
+            if self.gpu_memory_limit:
+                print(f"  GPU memory limit: {self.gpu_memory_limit}MB")
+            print()
+
+        # Execute runs
         try:
             for i in range(num_runs):
+                # Check failure rate
+                if i > 0:
+                    failure_rate = len(self.failed_runs) / (i + 1)
+                    if failure_rate > stop_on_failure_rate:
+                        if self.verbose:
+                            print(f"\nStopping due to high failure rate: {failure_rate:.1%}")
+                        break
+
+                # Run single training
                 metrics_df = self._run_single_fit(run_id=i + 1, epochs=epochs_per_run)
                 if metrics_df is not None:
                     self.all_runs_metrics.append(metrics_df)
 
+                # Log memory info periodically
+                if (i + 1) % 10 == 0 and self.verbose:
+                    memory_info = get_memory_info()
+                    if 'process_rss_mb' in memory_info:
+                        print(f"  Memory check: {memory_info['process_rss_mb']:.1f}MB")
+
         except KeyboardInterrupt:
-            print(f"\nKernel interrupted. Displaying results for {len(self.all_runs_metrics)} runs completed.")
+            if self.verbose:
+                print(f"\n\nStudy interrupted after {len(self.all_runs_metrics)} runs")
 
         finally:
-            # CHANGED: Use resource manager for final cleanup
-            try:
-                final_cleanup = self._resource_manager.cleanup_after_run()
-                if final_cleanup.cleanup_time_seconds > 1.0:
-                    print(f"Final cleanup completed in {final_cleanup.cleanup_time_seconds:.1f}s")
-            except Exception as e:
-                print(f"Final cleanup warning: {e}")
+            # Final cleanup for standard mode
+            if not self.use_process_isolation:
+                final_cleanup = self.memory_manager.cleanup()
+                if self.verbose and final_cleanup.memory_freed_mb:
+                    print(f"\nFinal cleanup freed {final_cleanup.memory_freed_mb:.1f}MB")
 
             self.logger.end_run()
 
+        # Print summary
+        if self.verbose:
+            successful = len(self.all_runs_metrics)
+            print(f"\nStudy Summary:")
+            print(f"  Successful runs: {successful}/{num_runs}")
+            if self.failed_runs:
+                print(f"  Failed runs: {self.failed_runs}")
+            if self.final_val_accuracies:
+                mean_acc = np.mean(self.final_val_accuracies)
+                std_acc = np.std(self.final_val_accuracies)
+                print(f"  Val accuracy: {mean_acc:.4f} ± {std_acc:.4f}")
+
         return self.all_runs_metrics, self.final_val_accuracies, self.final_test_metrics
 
+    def get_summary_stats(self) -> Dict[str, Any]:
+        """Get summary statistics for the completed study."""
+        stats = {
+            'total_runs': len(self.all_runs_metrics) + len(self.failed_runs),
+            'successful_runs': len(self.all_runs_metrics),
+            'failed_runs': len(self.failed_runs),
+            'failure_rate': len(self.failed_runs) / max(1, len(self.all_runs_metrics) + len(self.failed_runs))
+        }
+
+        if self.final_val_accuracies:
+            stats.update({
+                'val_accuracy_mean': np.mean(self.final_val_accuracies),
+                'val_accuracy_std': np.std(self.final_val_accuracies),
+                'val_accuracy_min': np.min(self.final_val_accuracies),
+                'val_accuracy_max': np.max(self.final_val_accuracies)
+            })
+
+        return stats
+
+
+# Module-level function for subprocess execution (must be picklable)
+def _isolated_training_function(model_builder, config, train_data,
+                                val_data, test_data, epochs, run_id):
+    """
+    Training function executed in isolated subprocess.
+
+    This function must be at module level to be picklable by multiprocessing.
+    It should be self-contained and not rely on any global state.
+    """
+    import gc
+
+    try:
+        # Build model in subprocess
+        model = model_builder(config)
+
+        # Train model
+        model.fit(
+            train_data=train_data,
+            validation_data=val_data,
+            epochs=epochs,
+            batch_size=config.get('batch_size', 32),
+            verbose=config.get('verbose', 0)
+        )
+
+        # Extract history
+        history = {}
+        if hasattr(model, 'history'):
+            if hasattr(model.history, 'history'):
+                # Keras History object
+                history = dict(model.history.history)
+            else:
+                # Already a dict
+                history = dict(model.history)
+
+        # Evaluate on test data if available
+        test_metrics = {}
+        if test_data is not None:
+            try:
+                test_metrics = model.evaluate(data=test_data)
+                # Ensure all values are serializable
+                if isinstance(test_metrics, dict):
+                    test_metrics = {
+                        k: float(v) if isinstance(v, (np.floating, np.integer)) else v
+                        for k, v in test_metrics.items()
+                    }
+            except Exception as e:
+                test_metrics = {'error': str(e)}
+
+        # Cleanup before returning
+        if hasattr(model, 'cleanup'):
+            model.cleanup()
+        del model
+        gc.collect()
+
+        return {
+            'history': history,
+            'test_metrics': test_metrics,
+            'run_id': run_id
+        }
+
+    except Exception as e:
+        # Return error information
+        import traceback
+        return {
+            'history': {},
+            'test_metrics': {},
+            'run_id': run_id,
+            'error': str(e),
+            'traceback': traceback.format_exc()
+        }
+
+
+@dataclass
 class VariabilityStudyResults:
     """
-    Container for variability study results with methods to easily extract data
-    for statistical analysis.
-
-    Maintains backward compatibility while providing enhanced functionality
-    for integration with analysis.py functions.
+    Container for variability study results with analysis methods.
     """
-
-    def __init__(self,
-                 all_runs_metrics: List[pd.DataFrame],
-                 final_val_accuracies: List[float],
-                 final_test_metrics: Optional[List[Dict[str, Any]]] = None):
-        """
-        Initialize variability study results.
-
-        Args:
-            all_runs_metrics: List of DataFrames containing full training histories
-            final_val_accuracies: List of final validation accuracies
-            final_test_metrics: Optional list of test metric dictionaries
-        """
-        self.all_runs_metrics = all_runs_metrics
-        self.final_val_accuracies = final_val_accuracies
-        self.final_test_metrics = final_test_metrics or []
-
-        self._validate_data()
-
-    def _validate_data(self):
-        """Validate that the data is consistent."""
-        if not self.all_runs_metrics:
-            raise ValueError("No run metrics provided")
-
-        n_runs = len(self.all_runs_metrics)
-
-        if len(self.final_val_accuracies) != n_runs:
-            raise ValueError(f"Mismatch: {n_runs} run metrics but {len(self.final_val_accuracies)} final accuracies")
-
-        if self.final_test_metrics and len(self.final_test_metrics) != n_runs:
-            raise ValueError(f"Mismatch: {n_runs} run metrics but {len(self.final_test_metrics)} test metrics")
-
-    def __iter__(self):
-        """Support tuple unpacking for backward compatibility."""
-        return iter((self.all_runs_metrics, self.final_val_accuracies, self.final_test_metrics))
-
-    def __len__(self):
-        """Return number of runs."""
-        return len(self.all_runs_metrics)
+    all_runs_metrics: List[pd.DataFrame]
+    final_val_accuracies: List[float]
+    final_test_metrics: List[Dict[str, Any]]
 
     @property
     def n_runs(self) -> int:
-        """Number of runs in the study."""
+        """Number of successful runs."""
         return len(self.all_runs_metrics)
 
-    def get_final_metrics(self, metric_name: str = 'val_accuracy') -> Dict[str, pd.Series]:
-        """
-        Extract final metric values in format ready for analysis.py functions.
-
-        Args:
-            metric_name: Name of metric to extract ('val_accuracy', 'val_loss', etc.)
-
-        Returns:
-            Dictionary mapping run names to pandas Series containing the final metric value
-
-        Example:
-            >>> results = run_variability_study(...)
-            >>> final_accs = results.get_final_metrics('val_accuracy')
-            >>> statistical_test = compare_multiple_models(final_accs)
-        """
-        if metric_name == 'val_accuracy':
-            # Special case: use the pre-computed final accuracies
-            values = self.final_val_accuracies
-        else:
-            # Extract from full training histories
-            values = []
-            for run_df in self.all_runs_metrics:
-                if metric_name in run_df.columns:
-                    values.append(run_df[metric_name].iloc[-1])
-                else:
-                    available_metrics = list(run_df.columns)
-                    raise ValueError(f"Metric '{metric_name}' not found. Available: {available_metrics}")
-
-        # Create dictionary with run names and convert each value to a pandas Series
-        run_names = [f'run_{i + 1}' for i in range(len(values))]
-        return {name: pd.Series([value]) for name, value in zip(run_names, values)}
-
-    def get_final_metrics_series(self, metric_name: str = 'val_accuracy') -> pd.Series:
-        """
-        Get final metrics as pandas Series (alternative format for some analysis functions).
-
-        Args:
-            metric_name: Name of metric to extract
-
-        Returns:
-            pandas Series with run names as index
-        """
-        final_dict = self.get_final_metrics(metric_name)
-        return pd.Series(final_dict)
-
-    def get_test_metrics(self, metric_name: str) -> Optional[Dict[str, float]]:
-        """
-        Extract test metrics in format ready for analysis.
-
-        Args:
-            metric_name: Name of test metric to extract
-
-        Returns:
-            Dictionary mapping run names to test metric values, or None if no test data
-        """
-        if not self.final_test_metrics:
-            return None
-
-        values = []
-        for test_dict in self.final_test_metrics:
-            if metric_name in test_dict:
-                values.append(test_dict[metric_name])
-            else:
-                available_metrics = list(test_dict.keys())
-                raise ValueError(f"Test metric '{metric_name}' not found. Available: {available_metrics}")
-
-        run_names = [f'run_{i + 1}' for i in range(len(values))]
-        return dict(zip(run_names, values))
-
-    def get_training_histories(self, metric_name: str) -> Dict[str, pd.Series]:
-        """
-        Extract full training histories for a specific metric.
-
-        Args:
-            metric_name: Name of metric to extract histories for
-
-        Returns:
-            Dictionary mapping run names to training history Series
-
-        Example:
-            >>> histories = results.get_training_histories('val_loss')
-            >>> autocorr_analysis = calculate_averaged_autocorr(list(histories.values()))
-        """
-        histories = {}
-
-        for i, run_df in enumerate(self.all_runs_metrics):
-            run_name = f'run_{i + 1}'
-
-            if metric_name in run_df.columns:
-                histories[run_name] = run_df[metric_name].copy()
-            else:
-                available_metrics = list(run_df.columns)
-                raise ValueError(f"Metric '{metric_name}' not found in run {i + 1}. Available: {available_metrics}")
-
-        return histories
-
-    def get_available_metrics(self) -> List[str]:
-        """Get list of all available metrics across all runs."""
-        all_metrics = set()
-
-        for run_df in self.all_runs_metrics:
-            all_metrics.update(run_df.columns)
-
-        # Add test metrics if available
-        if self.final_test_metrics:
-            for test_dict in self.final_test_metrics:
-                all_metrics.update(test_dict.keys())
-
-        return sorted(list(all_metrics))
+    def get_final_metrics(self, metric_name: str = 'val_accuracy') -> Dict[str, float]:
+        """Extract final metric values for each run."""
+        metrics = {}
+        for i, df in enumerate(self.all_runs_metrics):
+            if metric_name in df.columns:
+                metrics[f'run_{i + 1}'] = float(df[metric_name].iloc[-1])
+        return metrics
 
     def summarize(self) -> str:
-        """
-        Generate a text summary of the variability study results.
-
-        Returns:
-            Formatted summary string
-        """
-        summary_lines = [
-            f"Variability Study Results",
-            f"=" * 30,
-            f"Number of runs: {self.n_runs}",
-            f"Available metrics: {', '.join(self.get_available_metrics())}",
-            "",
-            f"Final Validation Accuracy:",
-            f"  Mean: {np.mean(self.final_val_accuracies):.4f}",
-            f"  Std:  {np.std(self.final_val_accuracies):.4f}",
-            f"  Min:  {np.min(self.final_val_accuracies):.4f}",
-            f"  Max:  {np.max(self.final_val_accuracies):.4f}",
+        """Generate text summary of results."""
+        lines = [
+            "Variability Study Results",
+            "=" * 30,
+            f"Successful runs: {self.n_runs}",
         ]
 
-        if self.final_test_metrics and 'accuracy' in self.final_test_metrics[0]:
-            test_accs = [tm['accuracy'] for tm in self.final_test_metrics]
-            summary_lines.extend([
-                "",
-                f"Final Test Accuracy:",
-                f"  Mean: {np.mean(test_accs):.4f}",
-                f"  Std:  {np.std(test_accs):.4f}",
-                f"  Min:  {np.min(test_accs):.4f}",
-                f"  Max:  {np.max(test_accs):.4f}",
+        if self.final_val_accuracies:
+            mean_acc = np.mean(self.final_val_accuracies)
+            std_acc = np.std(self.final_val_accuracies)
+            lines.extend([
+                f"Final validation accuracy:",
+                f"  Mean: {mean_acc:.4f}",
+                f"  Std:  {std_acc:.4f}",
+                f"  Min:  {np.min(self.final_val_accuracies):.4f}",
+                f"  Max:  {np.max(self.final_val_accuracies):.4f}"
             ])
 
-        return "\n".join(summary_lines)
-
-    def to_dataframe(self) -> pd.DataFrame:
-        """
-        Convert study results to a summary DataFrame.
-
-        Returns:
-            DataFrame with one row per run and columns for final metrics
-        """
-        data = []
-
-        for i in range(self.n_runs):
-            row = {
-                'run_id': i + 1,
-                'run_name': f'run_{i + 1}',
-                'final_val_accuracy': self.final_val_accuracies[i]
-            }
-
-            # Add final values of other metrics from training history
-            run_df = self.all_runs_metrics[i]
-            for col in run_df.columns:
-                if col != 'val_accuracy':  # Avoid duplication
-                    row[f'final_{col}'] = run_df[col].iloc[-1]
-
-            # Add test metrics if available
-            if i < len(self.final_test_metrics):
-                test_metrics = self.final_test_metrics[i]
-                for key, value in test_metrics.items():
-                    row[f'test_{key}'] = value
-
-            data.append(row)
-
-        return pd.DataFrame(data)
-
-    def compare_models_statistically(self, metric_name: str = 'val_accuracy',
-                                     alpha: float = 0.05,
-                                     correction_method: str = 'holm') -> Dict[str, Any]:
-        """
-        Convenience method to directly perform statistical comparison of runs.
-
-        Args:
-            metric_name: Metric to compare across runs
-            alpha: Significance level
-            correction_method: Multiple comparison correction method
-
-        Returns:
-            Results from compare_multiple_models()
-
-        Note: This imports analysis functions dynamically to avoid circular imports
-        """
-        try:
-            from .analysis import compare_multiple_models
-        except ImportError:
-            raise ImportError("Statistical analysis functions not available. "
-                              "Ensure scipy is installed and analysis.py is working.")
-
-        final_metrics = self.get_final_metrics(metric_name)
-
-        return compare_multiple_models(
-            final_metrics,
-            alpha=alpha,
-            correction_method=correction_method
-        )
+        return "\n".join(lines)
 
 
-def run_variability_study(model_builder, data_handler, model_config,
-                          num_runs: int = 5, epochs_per_run: Optional[int] = None,
-                          logger=None, use_process_isolation: bool = False) -> VariabilityStudyResults:
+# Convenience function
+def run_variability_study(
+        model_builder: Callable[[ModelConfig], BaseModelWrapper],
+        data_handler: DataHandler,
+        model_config: ModelConfig,
+        num_runs: int = 5,
+        epochs_per_run: Optional[int] = None,
+        logger: Optional[BaseLogger] = None,
+        use_process_isolation: bool = False,
+        gpu_memory_limit: Optional[int] = None,
+        verbose: bool = True) -> VariabilityStudyResults:
     """
-    Enhanced variability study that returns a VariabilityStudyResults object
-    with methods for easy integration with statistical analysis.
+    Run a complete variability study.
 
     Args:
-        model_builder: Function that creates a BaseModelWrapper from ModelConfig
-        data_handler: DataHandler instance
-        model_config: ModelConfig with training parameters
-        num_runs: Number of runs to perform (default 5)
-        epochs_per_run: Epochs per run (defaults to model_config.epochs or 10)
-        logger: Optional logger instance
-        use_process_isolation: If True, run each training iteration in a separate
-                             process for guaranteed memory cleanup. (default False)
+        model_builder: Function to create models
+        data_handler: Data loading and preparation
+        model_config: Model configuration
+        num_runs: Number of runs to perform
+        epochs_per_run: Epochs per run (defaults to config.epochs)
+        logger: Optional logger for metrics
+        use_process_isolation: If True, run each training in subprocess
+        gpu_memory_limit: GPU memory limit in MB
+        verbose: Print progress messages
 
     Returns:
-        VariabilityStudyResults object with analysis methods
+        VariabilityStudyResults with all metrics and analysis methods
     """
-    # Import here to avoid circular dependency
-    from .loggers import BaseLogger
-
-    if logger is None:
-        logger = BaseLogger()
-
     runner = ExperimentRunner(
         model_builder=model_builder,
         data_handler=data_handler,
         model_config=model_config,
         logger=logger,
-        use_process_isolation=use_process_isolation  # Pass the parameter
+        use_process_isolation=use_process_isolation,
+        gpu_memory_limit=gpu_memory_limit,
+        verbose=verbose
     )
 
-    all_metrics, final_accuracies, final_test_metrics = runner.run_study(
+    all_metrics, final_accs, test_metrics = runner.run_study(
         num_runs=num_runs,
         epochs_per_run=epochs_per_run
     )
 
-    # Return enhanced results object
-    return VariabilityStudyResults(all_metrics, final_accuracies, final_test_metrics)
+    return VariabilityStudyResults(all_metrics, final_accs, test_metrics)

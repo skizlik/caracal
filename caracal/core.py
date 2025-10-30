@@ -6,7 +6,7 @@ import pickle
 from sklearn.metrics import confusion_matrix, accuracy_score
 from typing import Dict, Any, Optional, Tuple, Union
 from abc import ABC, abstractmethod
-from .memory import get_resource_manager
+from .memory import get_memory_manager
 
 # Optional TensorFlow imports
 try:
@@ -41,7 +41,7 @@ class BaseModelWrapper(ABC):
         self.model_id = model_id
         self.history: Optional[Any] = None
         self.predictions: Optional[np.ndarray] = None
-        self._resource_manager = get_resource_manager(use_process_isolation=False)
+        self._resource_manager = get_memory_manager(use_process_isolation=False)
 
     def __repr__(self) -> str:
         model_type = self.model.__class__.__name__
@@ -62,7 +62,7 @@ class BaseModelWrapper(ABC):
         try:
             self._cleanup_implementation()
             # CHANGED: Use new resource manager cleanup
-            cleanup_result = self._resource_manager.cleanup_after_run()
+            cleanup_result = self._resource_manager.cleanup()
 
             # Report significant cleanup events
             if cleanup_result.cleanup_time_seconds > 1.0:
@@ -126,11 +126,17 @@ class BaseModelWrapper(ABC):
 
     def get_memory_report(self) -> Dict[str, Any]:
         """Get comprehensive memory usage report (available on all model wrappers)."""
-        return self._memory_manager.get_memory_report()
+        from .memory import get_memory_info
+        return get_memory_info()
 
     def check_memory_and_cleanup_if_needed(self) -> Optional[Dict[str, Any]]:
         """Check memory usage and cleanup if thresholds exceeded."""
-        return self._memory_manager.check_and_cleanup_if_needed()
+        # This method doesn't exist in new manager, just do cleanup
+        cleanup_result = self._resource_manager.cleanup()
+        if cleanup_result.memory_freed_mb and cleanup_result.memory_freed_mb > 50:
+            return {'cleaned': True, 'freed_mb': cleanup_result.memory_freed_mb}
+        return None
+
 
 # --- CONCRETE IMPLEMENTATIONS ---
 
@@ -144,6 +150,14 @@ if TENSORFLOW_AVAILABLE:
 
         def _cleanup_implementation(self):
             """TensorFlow/Keras specific cleanup."""
+            # Delete the model reference first
+            if hasattr(self, 'model'):
+                try:
+                    del self.model
+                except:
+                    pass
+
+            # Then perform deep cleanup
             from .memory import deep_clean_gpu
             deep_clean_gpu()
 

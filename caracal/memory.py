@@ -1,30 +1,29 @@
-# caracal/memory.py - Simple two-mode memory management system
-# Mode 1: Corrected in-process cleanup (default)
-# Mode 2: Process isolation (user-controlled)
+# caracal/memory.py - Production-ready memory management with smart serialization
+"""
+Memory management for caracal with two modes:
+1. Standard (default): Fast in-process execution with best-effort cleanup
+2. Process isolation (opt-in): Guaranteed cleanup via subprocess with smart serialization
+
+Process isolation uses cloudpickle when available to serialize notebook-defined
+functions, making it work seamlessly in Jupyter environments.
+"""
 
 import gc
 import os
+import sys
 import time
 import warnings
-import contextlib
 import pickle
-import tempfile
-from typing import Optional, Dict, Any, List, Callable, Union
+import traceback
+from typing import Optional, Dict, Any, Callable, Tuple, Union
 from dataclasses import dataclass, field
+from contextlib import contextmanager
+import multiprocessing as mp
 
 # Core dependencies
 import numpy as np
-import pandas as pd
 
 # Optional dependencies
-try:
-    import psutil
-
-    HAS_PSUTIL = True
-except ImportError:
-    psutil = None
-    HAS_PSUTIL = False
-
 try:
     import tensorflow as tf
 
@@ -34,474 +33,576 @@ except ImportError:
     HAS_TENSORFLOW = False
 
 try:
-    import joblib
+    import torch
 
-    HAS_JOBLIB = True
+    HAS_TORCH = True
 except ImportError:
-    joblib = None
-    HAS_JOBLIB = False
+    torch = None
+    HAS_TORCH = False
+
+try:
+    import psutil
+
+    HAS_PSUTIL = True
+except ImportError:
+    psutil = None
+    HAS_PSUTIL = False
+
+# CloudPickle for advanced serialization
+try:
+    import cloudpickle
+
+    HAS_CLOUDPICKLE = True
+except ImportError:
+    cloudpickle = None
+    HAS_CLOUDPICKLE = False
 
 
 @dataclass
-class CleanupResult:
-    """Result of cleanup operation."""
+class MemoryResult:
+    """Result of memory operations."""
     success: bool
-    actions_taken: List[str] = field(default_factory=list)
-    errors: List[str] = field(default_factory=list)
-    cleanup_time_seconds: float = 0.0
+    actions: list = field(default_factory=list)
+    errors: list = field(default_factory=list)
+    memory_before_mb: Optional[float] = None
+    memory_after_mb: Optional[float] = None
+    memory_freed_mb: Optional[float] = None
+    mode: str = "standard"  # "standard" or "isolated"
 
-    @property
-    def has_errors(self) -> bool:
-        return len(self.errors) > 0
 
-
-# Framework Handlers
-class TensorFlowHandler:
+class MemoryManager:
     """
-    Corrected TensorFlow memory management.
+    Unified memory manager for both standard and process-isolated training.
 
-    IMPORTANT: Does NOT use reset_memory_stats() which doesn't free memory.
-    Uses only proven cleanup methods.
+    Standard mode (default): Fast in-process execution with cleanup
+    Process isolation mode: Subprocess execution with guaranteed cleanup
     """
 
-    def __init__(self):
-        self.gpus: List[Any] = []
-        self.setup_complete = False
+    def __init__(self,
+                 use_process_isolation: bool = False,
+                 gpu_memory_limit: Optional[int] = None,
+                 process_timeout: int = 3600,
+                 allow_memory_growth: bool = True,
+                 verbose: bool = True):
+        """
+        Initialize memory manager.
 
-        if HAS_TENSORFLOW:
-            try:
-                self.gpus = tf.config.list_physical_devices('GPU')
-            except Exception:
-                self.gpus = []
+        Args:
+            use_process_isolation: If True, run in isolated subprocess
+            gpu_memory_limit: GPU memory limit in MB
+            process_timeout: Timeout for subprocess execution
+            allow_memory_growth: Allow GPU memory to grow as needed
+            verbose: Print informative messages
+        """
+        self.use_process_isolation = use_process_isolation
+        self.gpu_memory_limit = gpu_memory_limit
+        self.process_timeout = process_timeout
+        self.allow_memory_growth = allow_memory_growth
+        self.verbose = verbose
+        self._setup_complete = False
 
-    def setup_constraints(self, memory_limit_mb: Optional[int] = None) -> bool:
-        """Configure TensorFlow GPU memory limits."""
-        if not HAS_TENSORFLOW or self.setup_complete:
+        # For process isolation, prepare context
+        if use_process_isolation:
+            self._setup_process_isolation()
+
+    def _setup_process_isolation(self):
+        """Setup process isolation with appropriate serialization."""
+        # Check serialization capability
+        if not HAS_CLOUDPICKLE:
+            if self.verbose:
+                print("=" * 60)
+                print("PROCESS ISOLATION NOTE:")
+                print("CloudPickle not found. Installing it will enable")
+                print("notebook-defined functions to work with process isolation:")
+                print("  pip install cloudpickle")
+                print("=" * 60)
+
+        # Setup multiprocessing context (spawn for clean isolation)
+        try:
+            current_method = mp.get_start_method(allow_none=True)
+            if current_method != 'spawn':
+                mp.set_start_method('spawn', force=True)
+            self.ctx = mp.get_context('spawn')
+        except RuntimeError:
+            # Already set, just get context
+            self.ctx = mp.get_context('spawn')
+        except Exception as e:
+            warnings.warn(f"Could not setup spawn context: {e}")
+            self.ctx = mp.get_context()
+
+    def setup(self) -> bool:
+        """
+        Configure memory constraints for standard mode.
+        Must be called before any GPU operations.
+        """
+        if self.use_process_isolation:
+            # Setup happens in subprocess
             return True
 
-        if not self.gpus:
-            return True  # CPU mode
+        if self._setup_complete:
+            return True
 
-        success_count = 0
-        for gpu in self.gpus:
-            try:
-                if memory_limit_mb:
-                    tf.config.set_memory_limit(gpu, memory_limit_mb)
-                else:
-                    tf.config.experimental.set_memory_growth(gpu, True)
-                success_count += 1
+        success = False
 
-            except RuntimeError as e:
-                if "cannot be modified" in str(e).lower():
-                    return False  # Already initialized
-                warnings.warn(f"GPU setup failed for {gpu.name}: {e}")
-            except Exception as e:
-                warnings.warn(f"GPU setup error for {gpu.name}: {e}")
+        if HAS_TENSORFLOW:
+            success = self._setup_tensorflow() or success
 
-        self.setup_complete = success_count > 0
-        return self.setup_complete
+        if HAS_TORCH:
+            success = self._setup_pytorch() or success
 
-    def cleanup_after_run(self) -> CleanupResult:
-        """
-        CORRECTED TensorFlow cleanup using only reliable methods.
+        self._setup_complete = True
+        return success
 
-        Key fixes:
-        1. Does NOT call tf.config.experimental.reset_memory_stats() - that's useless
-        2. Uses tf.keras.backend.clear_session() - this actually works
-        3. Multiple garbage collection passes
-        4. Brief pause for asynchronous cleanup
-        """
-        start_time = time.time()
-        result = CleanupResult(success=True)
-
-        if not HAS_TENSORFLOW:
-            result.actions_taken.append('tensorflow_not_available')
-            return result
-
+    def _setup_tensorflow(self) -> bool:
+        """Configure TensorFlow memory settings."""
         try:
-            # Primary cleanup: Clear Keras session (this is what actually works)
-            tf.keras.backend.clear_session()
-            result.actions_taken.append('cleared_keras_session')
+            gpus = tf.config.list_physical_devices('GPU')
+            if not gpus:
+                return True  # CPU mode
+
+            for gpu in gpus:
+                try:
+                    if self.gpu_memory_limit:
+                        # Hard limit
+                        tf.config.set_logical_device_configuration(
+                            gpu,
+                            [tf.config.LogicalDeviceConfiguration(
+                                memory_limit=self.gpu_memory_limit
+                            )]
+                        )
+                        if self.verbose:
+                            print(f"Set GPU memory limit: {self.gpu_memory_limit}MB")
+                    elif self.allow_memory_growth:
+                        # Growth mode
+                        tf.config.experimental.set_memory_growth(gpu, True)
+                        if self.verbose:
+                            print("Enabled GPU memory growth")
+                except RuntimeError as e:
+                    if "visible devices" in str(e).lower():
+                        warnings.warn(
+                            "GPU already initialized. Memory settings must be "
+                            "configured before first TF operation."
+                        )
+                        return False
+                    raise
+
+            return True
 
         except Exception as e:
-            result.success = False
-            result.errors.append(f'Keras session clear failed: {str(e)[:80]}')
+            warnings.warn(f"TensorFlow setup failed: {e}")
+            return False
+
+    def _setup_pytorch(self) -> bool:
+        """Configure PyTorch memory settings."""
+        if not HAS_TORCH or not torch.cuda.is_available():
+            return True
 
         try:
-            # Secondary cleanup: Multiple garbage collection passes
-            total_collected = 0
-            for i in range(3):
-                collected = gc.collect()
-                total_collected += collected
-                if collected == 0:
-                    break
+            if self.gpu_memory_limit:
+                for i in range(torch.cuda.device_count()):
+                    props = torch.cuda.get_device_properties(i)
+                    total_mb = props.total_memory / (1024 ** 2)
+                    fraction = min(self.gpu_memory_limit / total_mb, 1.0)
+                    torch.cuda.set_per_process_memory_fraction(fraction, i)
 
-            result.actions_taken.append(f'gc_collected_{total_collected}_objects')
+                if self.verbose:
+                    print(f"Set PyTorch memory fraction: {fraction:.2f}")
 
-        except Exception as e:
-            result.errors.append(f'GC failed: {str(e)[:50]}')
-
-        # Brief pause to allow asynchronous GPU cleanup to complete
-        time.sleep(0.1)
-        result.actions_taken.append('async_cleanup_wait')
-
-        result.cleanup_time_seconds = time.time() - start_time
-        return result
-
-    def get_memory_info(self) -> Dict[str, float]:
-        """
-        Get TensorFlow GPU memory usage.
-
-        NOTE: This is unreliable immediately after cleanup due to async operations.
-        Use for monitoring only, not for control flow.
-        """
-        if not HAS_TENSORFLOW or not self.gpus:
-            return {}
-
-        memory_info = {}
-        for i, gpu in enumerate(self.gpus):
-            try:
-                info = tf.config.experimental.get_memory_info(gpu.name)
-                if info and 'current' in info:
-                    memory_info[f'gpu_{i}'] = float(info['current']) / 1024 / 1024
-            except Exception:
-                continue
-
-        return memory_info
-
-
-class SystemHandler:
-    """System-level memory management."""
-
-    def setup_constraints(self, memory_limit_mb: Optional[int] = None) -> bool:
-        """System handler requires no setup."""
-        return True
-
-    def cleanup_after_run(self) -> CleanupResult:
-        """Reliable system-level cleanup."""
-        start_time = time.time()
-        result = CleanupResult(success=True)
-
-        try:
-            # Multiple garbage collection passes to handle circular references
-            total_collected = 0
-            for i in range(3):
-                collected = gc.collect()
-                total_collected += collected
-                if collected == 0:
-                    break
-
-            result.actions_taken.append(f'system_gc_collected_{total_collected}_objects')
+            return True
 
         except Exception as e:
-            result.success = False
-            result.errors.append(f'System cleanup failed: {str(e)[:80]}')
+            warnings.warn(f"PyTorch setup failed: {e}")
+            return False
 
-        result.cleanup_time_seconds = time.time() - start_time
-        return result
+    def cleanup(self) -> MemoryResult:
+        """
+        Perform memory cleanup (standard mode only).
+        """
+        if self.use_process_isolation:
+            # No cleanup needed - process will die
+            return MemoryResult(
+                success=True,
+                actions=['process_isolation_no_cleanup'],
+                mode='isolated'
+            )
 
-    def get_memory_info(self) -> Dict[str, float]:
-        """Get system memory information."""
-        info = {}
+        result = MemoryResult(success=True, mode='standard')
 
+        # Measure before
         if HAS_PSUTIL:
             try:
                 process = psutil.Process()
-                vm = psutil.virtual_memory()
-
-                info.update({
-                    'process_memory_mb': process.memory_info().rss / 1024 / 1024,
-                    'system_available_gb': vm.available / (1024 ** 3),
-                    'system_percent_used': vm.percent
-                })
-            except Exception:
+                result.memory_before_mb = process.memory_info().rss / (1024 ** 2)
+            except:
                 pass
 
-        return info
-
-
-# Standard In-Process Resource Manager
-class StandardResourceManager:
-    """
-    Standard resource manager with corrected in-process cleanup.
-
-    This is the default mode - fast execution with reliable cleanup
-    that should work for most scenarios.
-    """
-
-    def __init__(self):
-        self.handlers = self._initialize_handlers()
-        self.setup_complete = False
-
-    def _initialize_handlers(self) -> Dict[str, Any]:
-        """Initialize available framework handlers."""
-        handlers = {'system': SystemHandler()}
-
+        # TensorFlow cleanup
         if HAS_TENSORFLOW:
-            handlers['tensorflow'] = TensorFlowHandler()
-
-        # Future: PyTorch handler would be added here
-        # if HAS_PYTORCH:
-        #     handlers['pytorch'] = PyTorchHandler()
-
-        return handlers
-
-    def setup_training_constraints(self, memory_limit_mb: Optional[int] = None) -> bool:
-        """Set up memory constraints for training."""
-        if self.setup_complete:
-            return True
-
-        setup_success = False
-        for name, handler in self.handlers.items():
             try:
-                if handler.setup_constraints(memory_limit_mb):
-                    setup_success = True
-            except Exception as e:
-                warnings.warn(f"Handler {name} setup failed: {e}")
+                tf.keras.backend.clear_session()
+                result.actions.append('tf_clear_session')
 
-        self.setup_complete = True
-        return setup_success
+                # Reset graph
+                try:
+                    tf.compat.v1.reset_default_graph()
+                    result.actions.append('tf_reset_graph')
+                except:
+                    pass
 
-    def cleanup_after_run(self) -> CleanupResult:
-        """
-        Perform corrected in-process cleanup across all frameworks.
-
-        This should handle most memory accumulation scenarios without
-        the overhead of process isolation.
-        """
-        overall_result = CleanupResult(success=True)
-        start_time = time.time()
-
-        # Run cleanup for each framework handler
-        for name, handler in self.handlers.items():
-            try:
-                handler_result = handler.cleanup_after_run()
-
-                # Aggregate results
-                overall_result.actions_taken.extend([
-                    f"{name}: {action}" for action in handler_result.actions_taken
-                ])
-
-                if handler_result.has_errors:
-                    overall_result.errors.extend([
-                        f"{name}: {error}" for error in handler_result.errors
-                    ])
-                    overall_result.success = False
+                # GPU stats reset
+                for gpu in tf.config.list_physical_devices('GPU'):
+                    try:
+                        tf.config.experimental.reset_memory_stats(gpu.name.split(':')[-1])
+                        result.actions.append(f'tf_reset_{gpu.name}_stats')
+                    except:
+                        pass
 
             except Exception as e:
-                overall_result.errors.append(f"{name} cleanup failed: {str(e)[:80]}")
-                overall_result.success = False
+                result.errors.append(f'TF cleanup: {str(e)[:100]}')
 
-        overall_result.cleanup_time_seconds = time.time() - start_time
-        return overall_result
-
-    def get_memory_report(self) -> Dict[str, Any]:
-        """Get comprehensive memory usage report."""
-        report = {
-            'timestamp': time.time(),
-            'mode': 'standard_cleanup',
-            'handlers_available': list(self.handlers.keys()),
-            'memory_info': {}
-        }
-
-        for name, handler in self.handlers.items():
+        # PyTorch cleanup
+        if HAS_TORCH and torch.cuda.is_available():
             try:
-                info = handler.get_memory_info()
-                report['memory_info'][name] = info if info else {'no_data': True}
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                result.actions.append('torch_empty_cache')
             except Exception as e:
-                report['memory_info'][name] = {'error': str(e)[:50]}
+                result.errors.append(f'PyTorch cleanup: {str(e)[:100]}')
 
-        return report
+        # Garbage collection
+        collected = sum(gc.collect() for _ in range(3))
+        result.actions.append(f'gc_collected_{collected}')
 
+        # Measure after
+        if HAS_PSUTIL:
+            try:
+                process = psutil.Process()
+                result.memory_after_mb = process.memory_info().rss / (1024 ** 2)
+                if result.memory_before_mb:
+                    result.memory_freed_mb = result.memory_before_mb - result.memory_after_mb
+            except:
+                pass
 
-# Process Isolation Resource Manager
-class ProcessIsolationManager:
-    """
-    Process isolation resource manager.
-
-    Runs each training iteration in a completely separate process
-    for guaranteed memory cleanup. Slower but 100% reliable.
-    """
-
-    def __init__(self):
-        if not HAS_JOBLIB:
-            raise ImportError(
-                "Process isolation requires joblib. Install with: pip install joblib"
-            )
-
-    def setup_training_constraints(self, memory_limit_mb: Optional[int] = None) -> bool:
-        """Process isolation setup - verify joblib availability."""
-        return HAS_JOBLIB
-
-    def cleanup_after_run(self) -> CleanupResult:
-        """
-        Process isolation cleanup.
-
-        NOTE: The real cleanup happens when the isolated process terminates.
-        This method is called from within the isolated process and does
-        basic in-process cleanup as a backup.
-        """
-        result = CleanupResult(success=True)
-        result.actions_taken.append('process_isolation_cleanup_on_exit')
-
-        # Do basic cleanup within the process as well
-        try:
-            collected = gc.collect()
-            result.actions_taken.append(f'backup_gc_collected_{collected}_objects')
-        except Exception as e:
-            result.errors.append(f'Backup cleanup failed: {str(e)[:80]}')
-
+        result.success = len(result.errors) == 0
         return result
 
-    def run_training_isolated(self,
-                              training_func: Callable,
-                              args: tuple = (),
-                              kwargs: dict = None) -> Any:
+    def run_isolated(self, func: Callable, args: tuple = (),
+                     kwargs: Optional[Dict] = None) -> Dict[str, Any]:
         """
-        Run training function in completely isolated process.
+        Run function in isolated subprocess with smart serialization.
 
-        Args:
-            training_func: Function to run in isolation
-            args: Positional arguments for training_func
-            kwargs: Keyword arguments for training_func
-
-        Returns:
-            Result from training_func
-
-        Raises:
-            RuntimeError: If process isolation fails
+        Automatically uses cloudpickle if available for notebook functions,
+        falls back to standard pickle for module functions.
         """
+        if not self.use_process_isolation:
+            raise RuntimeError("run_isolated requires use_process_isolation=True")
+
         if kwargs is None:
             kwargs = {}
 
-        try:
-            # Use joblib with loky backend for reliable process isolation
-            with joblib.parallel_backend('loky', n_jobs=1):
-                delayed_func = joblib.delayed(training_func)
-                result = delayed_func(*args, **kwargs)
+        # Determine serialization strategy
+        can_standard_pickle = self._test_pickle(func, args, kwargs)
 
-            return result
+        if HAS_CLOUDPICKLE:
+            # Use cloudpickle for maximum compatibility
+            return self._run_with_cloudpickle(func, args, kwargs)
+
+        elif can_standard_pickle:
+            # Use standard pickle
+            return self._run_with_standard_pickle(func, args, kwargs)
+
+        else:
+            # Can't serialize for subprocess
+            warning_msg = (
+                "Cannot serialize function for process isolation. "
+                "Options:\n"
+                "1. Install cloudpickle: pip install cloudpickle\n"
+                "2. Define function in a module file (not notebook)\n"
+                "3. Use standard mode (use_process_isolation=False)\n"
+                "\nFalling back to in-process execution with cleanup..."
+            )
+            warnings.warn(warning_msg)
+
+            # Fallback: aggressive in-process execution
+            return self._run_with_aggressive_cleanup(func, args, kwargs)
+
+    def _test_pickle(self, func, args, kwargs):
+        """Test if objects can be pickled."""
+        try:
+            pickle.dumps((func, args, kwargs))
+            return True
+        except:
+            return False
+
+    def _run_with_cloudpickle(self, func, args, kwargs):
+        """Run using cloudpickle serialization."""
+        result_queue = self.ctx.Queue()
+
+        # Serialize with cloudpickle
+        try:
+            serialized_payload = cloudpickle.dumps((func, args, kwargs))
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'CloudPickle serialization failed: {e}'
+            }
+
+        # Run subprocess
+        process = self.ctx.Process(
+            target=_cloudpickle_subprocess_worker,
+            args=(result_queue, serialized_payload, self.gpu_memory_limit)
+        )
+
+        return self._execute_subprocess(process, result_queue)
+
+    def _run_with_standard_pickle(self, func, args, kwargs):
+        """Run using standard pickle."""
+        result_queue = self.ctx.Queue()
+
+        process = self.ctx.Process(
+            target=_standard_subprocess_worker,
+            args=(result_queue, func, args, kwargs, self.gpu_memory_limit)
+        )
+
+        return self._execute_subprocess(process, result_queue)
+
+    def _run_with_aggressive_cleanup(self, func, args, kwargs):
+        """Fallback: Run in-process with aggressive cleanup."""
+        # Clean before
+        self.cleanup()
+
+        try:
+            result = func(*args, **kwargs)
+            return {'success': True, 'result': result, 'mode': 'fallback'}
 
         except Exception as e:
-            raise RuntimeError(f"Process isolation failed: {e}")
-
-    def get_memory_report(self) -> Dict[str, Any]:
-        """Get memory report for process isolation mode."""
-        return {
-            'timestamp': time.time(),
-            'mode': 'process_isolation',
-            'isolation_backend': 'joblib_loky',
-            'memory_info': {
-                'note': 'Memory cleanup guaranteed by process termination'
+            return {
+                'success': False,
+                'error': str(e),
+                'traceback': traceback.format_exc(),
+                'mode': 'fallback'
             }
-        }
+
+        finally:
+            # Aggressive cleanup
+            self.cleanup()
+            if HAS_TENSORFLOW:
+                try:
+                    tf.keras.backend.clear_session()
+                except:
+                    pass
+            gc.collect()
+
+    def _execute_subprocess(self, process, result_queue):
+        """Common subprocess execution logic."""
+        try:
+            process.start()
+            process.join(timeout=self.process_timeout)
+
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=5)
+                if process.is_alive():
+                    process.kill()
+                    process.join()
+                return {
+                    'success': False,
+                    'error': f'Process timeout ({self.process_timeout}s)'
+                }
+
+            if process.exitcode != 0:
+                return {
+                    'success': False,
+                    'error': f'Process crashed (exit code {process.exitcode})'
+                }
+
+            try:
+                return result_queue.get(timeout=5)
+            except:
+                return {
+                    'success': False,
+                    'error': 'No result from subprocess'
+                }
+
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'Subprocess execution failed: {e}'
+            }
+        finally:
+            if process.is_alive():
+                process.terminate()
 
 
-# Factory Function
-def get_resource_manager(use_process_isolation: bool = False) -> Union[
-    StandardResourceManager, ProcessIsolationManager]:
-    """
-    Create appropriate resource manager based on user preference.
+# Subprocess worker functions (module-level for picklability)
 
-    Args:
-        use_process_isolation: If True, use process isolation for guaranteed cleanup.
-                             If False, use corrected in-process cleanup (default).
-
-    Returns:
-        Configured resource manager
-
-    Raises:
-        ImportError: If process isolation requested but joblib not available
-    """
-    if use_process_isolation:
-        return ProcessIsolationManager()
-    else:
-        return StandardResourceManager()
-
-
-# Context Manager
-@contextlib.contextmanager
-def managed_training_context(memory_limit_mb: Optional[int] = None,
-                             use_process_isolation: bool = False):
-    """
-    Context manager for training with automatic memory management.
-
-    Args:
-        memory_limit_mb: GPU memory limit per device in MB
-        use_process_isolation: If True, enables process isolation mode
-
-    Example:
-        # Standard mode (default)
-        with managed_training_context(memory_limit_mb=2048) as manager:
-            # Training code here
-
-        # Process isolation mode (slower but more reliable)
-        with managed_training_context(memory_limit_mb=2048,
-                                    use_process_isolation=True) as manager:
-            # Training code here
-    """
-    manager = get_resource_manager(use_process_isolation)
+def _cloudpickle_subprocess_worker(queue, serialized_payload, gpu_memory_limit):
+    """Worker using cloudpickle deserialization."""
+    import cloudpickle
 
     try:
-        # Setup
-        setup_success = manager.setup_training_constraints(memory_limit_mb)
+        # Setup GPU in subprocess
+        _setup_subprocess_gpu(gpu_memory_limit)
 
-        if not setup_success:
-            mode = "process isolation" if use_process_isolation else "standard cleanup"
-            warnings.warn(f"Memory management setup incomplete for {mode} mode")
-        else:
-            mode = "process isolation" if use_process_isolation else "standard cleanup"
-            print(f"Memory management configured with {mode}")
+        # Deserialize and execute
+        func, args, kwargs = cloudpickle.loads(serialized_payload)
+        result = func(*args, **kwargs)
 
-        yield manager
+        # Cleanup before sending result
+        _cleanup_subprocess()
 
-    finally:
-        # Final cleanup (only relevant for standard mode)
-        if not use_process_isolation:
-            try:
-                cleanup_result = manager.cleanup_after_run()
-                if cleanup_result.cleanup_time_seconds > 1.0:
-                    print(f"Final cleanup completed in {cleanup_result.cleanup_time_seconds:.1f}s")
-                if cleanup_result.has_errors:
-                    print(f"Final cleanup had {len(cleanup_result.errors)} warnings")
-            except Exception as e:
-                warnings.warn(f"Final cleanup failed: {e}")
+        queue.put({'success': True, 'result': result})
+
+    except Exception as e:
+        queue.put({
+            'success': False,
+            'error': str(e),
+            'traceback': traceback.format_exc()
+        })
 
 
-# Convenience Functions
-def setup_memory_efficient_training(memory_limit_mb: Optional[int] = None,
-                                    use_process_isolation: bool = False) -> Union[
-    StandardResourceManager, ProcessIsolationManager]:
-    """
-    Set up memory-efficient training configuration.
+def _standard_subprocess_worker(queue, func, args, kwargs, gpu_memory_limit):
+    """Worker using standard pickle."""
+    try:
+        # Setup GPU in subprocess
+        _setup_subprocess_gpu(gpu_memory_limit)
 
-    Args:
-        memory_limit_mb: GPU memory limit per device
-        use_process_isolation: Whether to use process isolation
+        # Execute
+        result = func(*args, **kwargs)
 
-    Returns:
-        Configured resource manager
-    """
-    manager = get_resource_manager(use_process_isolation)
+        # Cleanup
+        _cleanup_subprocess()
 
-    setup_success = manager.setup_training_constraints(memory_limit_mb)
+        queue.put({'success': True, 'result': result})
 
-    if setup_success:
-        mode = "process isolation" if use_process_isolation else "standard cleanup"
-        print(f"Memory-efficient training configured with {mode}")
-        if memory_limit_mb:
-            print(f"GPU memory limit: {memory_limit_mb}MB per device")
-    else:
-        warnings.warn("Memory management setup failed")
+    except Exception as e:
+        queue.put({
+            'success': False,
+            'error': str(e),
+            'traceback': traceback.format_exc()
+        })
 
-    return manager
 
-def deep_clean_gpu():
-    """Deep GPU memory cleanup for TensorFlow."""
+def _setup_subprocess_gpu(gpu_memory_limit):
+    """Configure GPU in subprocess."""
+    if HAS_TENSORFLOW:
+        try:
+            gpus = tf.config.list_physical_devices('GPU')
+            for gpu in gpus:
+                if gpu_memory_limit:
+                    tf.config.set_logical_device_configuration(
+                        gpu,
+                        [tf.config.LogicalDeviceConfiguration(
+                            memory_limit=gpu_memory_limit
+                        )]
+                    )
+                else:
+                    tf.config.experimental.set_memory_growth(gpu, True)
+        except Exception as e:
+            print(f"GPU setup warning in subprocess: {e}", file=sys.stderr)
+
+
+def _cleanup_subprocess():
+    """Cleanup before subprocess exits."""
     if HAS_TENSORFLOW:
         try:
             tf.keras.backend.clear_session()
-            import gc
-            gc.collect()
-        except Exception:
+        except:
             pass
+    gc.collect()
+
+
+# Public API
+
+def get_memory_manager(use_process_isolation: bool = False, **kwargs) -> MemoryManager:
+    """
+    Create a memory manager.
+
+    Args:
+        use_process_isolation: Enable subprocess isolation (default: False)
+        **kwargs: Additional options
+
+    Returns:
+        Configured MemoryManager
+    """
+    return MemoryManager(use_process_isolation=use_process_isolation, **kwargs)
+
+
+@contextmanager
+def managed_memory(use_process_isolation: bool = False, **kwargs):
+    """
+    Context manager for memory-managed operations.
+
+    Examples:
+        # Standard mode (default)
+        with managed_memory():
+            model.fit(...)
+
+        # Process isolation for extended runs
+        with managed_memory(use_process_isolation=True):
+            for i in range(100):
+                train_model()
+    """
+    manager = MemoryManager(use_process_isolation=use_process_isolation, **kwargs)
+
+    if not use_process_isolation:
+        try:
+            manager.setup()
+            yield manager
+        finally:
+            manager.cleanup()
+    else:
+        yield manager
+
+
+def cleanup_gpu_memory() -> MemoryResult:
+    """Quick GPU memory cleanup."""
+    manager = MemoryManager(use_process_isolation=False)
+    return manager.cleanup()
+
+
+def get_memory_info() -> Dict[str, Any]:
+    """Get current memory usage."""
+    info = {}
+
+    if HAS_PSUTIL:
+        try:
+            process = psutil.Process()
+            info['process_rss_mb'] = process.memory_info().rss / (1024 ** 2)
+
+            vm = psutil.virtual_memory()
+            info['system_available_mb'] = vm.available / (1024 ** 2)
+            info['system_percent'] = vm.percent
+        except:
+            pass
+
+    if HAS_TENSORFLOW:
+        try:
+            for i, gpu in enumerate(tf.config.list_physical_devices('GPU')):
+                stats = tf.config.experimental.get_memory_info(f'GPU:{i}')
+                info[f'gpu{i}_current_mb'] = stats.get('current', 0) / (1024 ** 2)
+        except:
+            pass
+
+    return info
+
+
+def check_isolation_capability(func: Callable) -> Tuple[bool, str]:
+    """
+    Check if a function can be used with process isolation.
+
+    Returns:
+        (can_isolate, reason)
+    """
+    if HAS_CLOUDPICKLE:
+        try:
+            cloudpickle.dumps(func)
+            return True, "cloudpickle serialization available"
+        except Exception as e:
+            return False, f"cloudpickle failed: {e}"
+    else:
+        try:
+            pickle.dumps(func)
+            return True, "standard pickle works"
+        except:
+            return False, "install cloudpickle for notebook functions"
