@@ -61,14 +61,14 @@ class BaseModelWrapper(ABC):
         """
         try:
             self._cleanup_implementation()
-            # CHANGED: Use new resource manager cleanup
+            # Use new resource manager cleanup
             cleanup_result = self._resource_manager.cleanup()
 
             # Report significant cleanup events
-            if cleanup_result.cleanup_time_seconds > 1.0:
-                print(f"Model cleanup completed in {cleanup_result.cleanup_time_seconds:.1f}s")
+            if cleanup_result.memory_freed_mb and cleanup_result.memory_freed_mb > 10:
+                print(f"Model cleanup freed {cleanup_result.memory_freed_mb:.1f}MB")
 
-            if cleanup_result.has_errors:
+            if cleanup_result.errors:
                 print(f"Model cleanup had {len(cleanup_result.errors)} warnings")
 
         except Exception as e:
@@ -157,9 +157,16 @@ if TENSORFLOW_AVAILABLE:
                 except:
                     pass
 
-            # Then perform deep cleanup
-            from .memory import deep_clean_gpu
-            deep_clean_gpu()
+            # Perform TensorFlow cleanup
+            try:
+                import tensorflow as tf
+                tf.keras.backend.clear_session()
+            except:
+                pass
+
+            # Basic garbage collection
+            import gc
+            gc.collect()
 
         def _cleanup_model_references(self):
             """Clear model references."""
