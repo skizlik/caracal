@@ -79,18 +79,54 @@ def plot_confusion_matrix(cm_df: pd.DataFrame, title: str = ""):
 
 def plot_training_history(history: Any, title: str = None, metrics: List[str] = None):
     """
-    Plots training and validation metrics from a history object.
+    Plot training and validation metrics from a history object.
 
-    Args:
-        history (Any): A Keras History object, a pandas DataFrame, a dictionary of lists,
-                       or a list of dictionaries.
-        title (str, optional): The title of the plot. If not provided, a default
-                               title will be generated.
-        metrics (List[str], optional): A list of metrics to plot, e.g., ['accuracy', 'loss'].
-                                       Defaults to ['accuracy', 'loss'] if not provided.
+    Visualizes the training progression over epochs with separate panels for each metric,
+    showing both training and validation curves when available.
+
+    Parameters
+    ----------
+    history : Any
+        Can be one of:
+        - Keras History object (with .history attribute)
+        - pandas DataFrame with columns like 'loss', 'val_loss', 'accuracy', etc.
+        - Dictionary of lists mapping metric names to per-epoch values
+        - List of dictionaries, each containing metrics for one epoch
+    title : str, optional
+        Custom title for the plot. If None, generates an informative title
+        based on metrics and number of epochs.
+    metrics : List[str], optional
+        List of metrics to plot (e.g., ['accuracy', 'loss']). If None,
+        defaults to ['accuracy', 'loss'] if available, otherwise plots
+        all available metrics.
+
+    Returns
+    -------
+    None
+        Displays the plot using matplotlib.pyplot.show()
+
+    Examples
+    --------
+    >>> # From a Keras model
+    >>> history = model.fit(X_train, y_train, validation_split=0.2, epochs=20)
+    >>> plot_training_history(history)
+
+    >>> # From a pandas DataFrame
+    >>> df = pd.DataFrame({'loss': losses, 'val_loss': val_losses})
+    >>> plot_training_history(df, metrics=['loss'])
+
+    >>> # With custom title
+    >>> plot_training_history(history, title="CNN Training Progress")
+
+    Notes
+    -----
+    - Automatically detects available metrics from the history object
+    - Uses consistent color scheme: blue for training, orange for validation
+    - Handles missing validation metrics gracefully
     """
     _check_matplotlib()
 
+    # Convert various history formats to DataFrame
     if isinstance(history, pd.DataFrame):
         history_df = history
     elif isinstance(history, dict):
@@ -104,39 +140,102 @@ def plot_training_history(history: Any, title: str = None, metrics: List[str] = 
             print("Error: The provided history object format is not supported.")
             return
 
+    # Determine which metrics to plot
     if metrics is None:
-        metrics = ['accuracy', 'loss']
+        # Default to common metrics if available
+        available = history_df.columns.tolist()
+        default_metrics = []
+        if 'accuracy' in available or 'train_accuracy' in available:
+            default_metrics.append('accuracy')
+        if 'loss' in available or 'train_loss' in available:
+            default_metrics.append('loss')
 
+        if default_metrics:
+            metrics = default_metrics
+        else:
+            # Use all metrics, excluding validation versions and epoch
+            metrics = [col for col in available
+                       if not col.startswith('val_') and col != 'epoch']
+            if not metrics:
+                print("No metrics found to plot.")
+                return
+
+    # Generate title if not provided
     if title is None:
-        epochs = len(history_df)
-        metric_names = " & ".join(m.title() for m in metrics)
-        title = f'Training & Validation {metric_names} ({epochs} Epochs)'
+        n_epochs = len(history_df)
+        metric_names = ", ".join([m.replace('_', ' ').title() for m in metrics])
+        title = f'Training Progress: {n_epochs} Epochs'
 
+    # Create subplots
     num_metrics = len(metrics)
-    fig, axes = plt.subplots(1, num_metrics, figsize=(6 * num_metrics, 5))
+    fig, axes = plt.subplots(1, num_metrics, figsize=(7 * num_metrics, 5))
 
     if num_metrics == 1:
         axes = [axes]
 
+    # Colors for consistency
+    train_color = '#1f77b4'  # Blue
+    val_color = '#ff7f0e'  # Orange
+
     for i, metric in enumerate(metrics):
-        val_metric = f'val_{metric}'
-        if metric in history_df.columns and val_metric in history_df.columns:
-            axes[i].plot(history_df[metric], label=f'Training {metric.title()}')
-            axes[i].plot(history_df[val_metric], label=f'Validation {val_metric.title()}')
-            axes[i].set_title(f'{metric.title()}')
-            axes[i].set_xlabel('Epoch')
-            axes[i].set_ylabel(metric.title())
-            axes[i].legend()
-            axes[i].grid(True)
+        ax = axes[i]
+
+        # Handle different column naming conventions
+        if metric in history_df.columns:
+            train_col = metric
+        elif f'train_{metric}' in history_df.columns:
+            train_col = f'train_{metric}'
         else:
-            print(f"Warning: Metric '{metric}' or '{val_metric}' not found in history data. Skipping.")
-            if i < len(axes):
-                fig.delaxes(axes[i])
+            print(f"Warning: Metric '{metric}' not found in history. Skipping.")
+            fig.delaxes(ax)
+            continue
 
-    fig.suptitle(title, fontsize=16)
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        val_col = f'val_{metric}'
+
+        # Generate clean metric name for display
+        metric_display = metric.replace('_', ' ').title()
+        if metric.lower() in ['mse', 'mae', 'rmse']:
+            metric_display = metric.upper()
+        elif metric.lower() == 'auc':
+            metric_display = 'AUC'
+
+        # Create epochs array
+        epochs = range(1, len(history_df) + 1)
+
+        # Plot training metric
+        ax.plot(epochs, history_df[train_col],
+                label=f'Training', color=train_color, linewidth=2)
+
+        # Plot validation metric if available
+        if val_col in history_df.columns:
+            ax.plot(epochs, history_df[val_col],
+                    label=f'Validation', color=val_color, linewidth=2)
+
+            # Add final values to legend
+            final_train = history_df[train_col].iloc[-1]
+            final_val = history_df[val_col].iloc[-1]
+            ax.plot([], [], ' ', label=f'Final: {final_train:.4f} / {final_val:.4f}')
+        else:
+            final_train = history_df[train_col].iloc[-1]
+            ax.plot([], [], ' ', label=f'Final: {final_train:.4f}')
+
+        ax.set_title(metric_display, fontsize=12, fontweight='bold')
+        ax.set_xlabel('Epoch', fontsize=11)
+        ax.set_ylabel(metric_display, fontsize=11)
+
+        # Force integer-only epoch labels
+        ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
+
+        # Set y-axis limits for bounded metrics
+        if any(x in metric.lower() for x in ['accuracy', 'auc', 'precision', 'recall', 'f1']):
+            ax.set_ylim([0, 1.05])
+
+        ax.legend(loc='best', framealpha=0.9)
+        ax.grid(True, alpha=0.3)
+
+    fig.suptitle(title, fontsize=14, fontweight='bold')
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
     plt.show()
-
 
 def plot_roc_curve(model_wrapper: 'BaseModelWrapper', X_test: np.ndarray, y_test: np.ndarray, title: str = ""):
     """Plots the ROC curve for a multi-class model."""
