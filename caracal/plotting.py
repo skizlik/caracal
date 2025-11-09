@@ -211,12 +211,85 @@ def plot_precision_recall_curve(model_wrapper: 'BaseModelWrapper', X_test: np.nd
 def plot_variability_summary(all_runs_metrics_list: List[pd.DataFrame],
                              final_metrics_series: Union[pd.Series, List],
                              final_test_series: Optional[Union[pd.Series, List]] = None,
-                             metric: str = 'accuracy',  # FIXED: Changed default from 'accuracy' to base metric name
-                             train_color: str = 'blue',
-                             val_color: str = 'orange',
+                             metric: str = 'accuracy',
+                             train_color: str = '#1f77b4',
+                             val_color: str = '#ff7f0e',
                              show_histogram: bool = True,
-                             show_boxplot: bool = False):
-    """Creates a composite plot of a variability study's results."""
+                             show_boxplot: bool = False,
+                             show_mean_lines: bool = True):
+    """
+    Create a comprehensive visualization of a variability study's results.
+
+    Generates a multi-panel plot showing:
+    - Training curves for all runs overlaid with optional mean trajectories
+    - Distribution histogram of final metrics (rotated for visual alignment)
+    - Optional boxplot summary statistics
+
+    Parameters
+    ----------
+    all_runs_metrics_list : List[pd.DataFrame]
+        List of DataFrames, each containing the training history for one run.
+        Expected columns: 'epoch', 'train_{metric}', 'val_{metric}'
+    final_metrics_series : Union[pd.Series, List]
+        Final validation metrics from each run. Can be a pandas Series or list
+        of values. If list of dicts, will extract the appropriate metric.
+    final_test_series : Optional[Union[pd.Series, List]], default=None
+        Final test metrics from each run, if available. Same format as
+        final_metrics_series.
+    metric : str, default='accuracy'
+        Name of the metric to plot. Can include prefix like 'val_accuracy'
+        or just base name like 'accuracy'. Common metrics are automatically
+        formatted (e.g., 'mse' → 'MSE', 'auc' → 'AUC').
+    train_color : str, default='#1f77b4'
+        Hex color code for training curves (matplotlib default blue).
+    val_color : str, default='#ff7f0e'
+        Hex color code for validation curves (matplotlib default orange).
+    show_histogram : bool, default=True
+        Whether to include the distribution histogram panel.
+    show_boxplot : bool, default=False
+        Whether to include the boxplot summary panel.
+    show_mean_lines : bool, default=True
+        Whether to overlay bold mean trajectory lines when multiple runs exist.
+
+    Returns
+    -------
+    None
+        Displays the plot using matplotlib.pyplot.show()
+
+    Notes
+    -----
+    - Automatically detects metric types (loss vs accuracy) for appropriate scaling
+    - Handles both Keras-style ('train_accuracy', 'val_accuracy') and
+      sklearn-style ('accuracy') column naming
+    - Alpha transparency is automatically adjusted based on number of runs
+    - For bounded metrics (accuracy, precision, etc.), y-axis is set to [0, 1.05]
+
+    Examples
+    --------
+    >>> # Basic usage with a completed variability study
+    >>> results = caracal.run_variability_study(model, data, config)
+    >>> plot_variability_summary(
+    ...     results.all_runs_metrics,
+    ...     results.final_val_accuracies
+    ... )
+
+    >>> # Plotting loss instead of accuracy, without mean lines
+    >>> plot_variability_summary(
+    ...     results.all_runs_metrics,
+    ...     results.get_final_metrics('val_loss'),
+    ...     metric='loss',
+    ...     show_mean_lines=False
+    ... )
+
+    >>> # Including test results with both histogram and boxplot
+    >>> plot_variability_summary(
+    ...     results.all_runs_metrics,
+    ...     results.final_val_accuracies,
+    ...     final_test_series=results.final_test_accuracies,
+    ...     show_histogram=True,
+    ...     show_boxplot=True
+    ... )
+    """
     _check_matplotlib()
     _check_seaborn()
 
@@ -229,82 +302,182 @@ def plot_variability_summary(all_runs_metrics_list: List[pd.DataFrame],
             return pd.Series([metrics.get(metric_key) for metrics in data])
         return pd.Series(data)
 
-    final_metrics_series = to_series(final_metrics_series, f'val_{metric}')
+    # Clean up metric handling
+    base_metric = metric.replace('train_', '').replace('val_', '')
+    train_col = f'train_{base_metric}'
+    val_col = f'val_{base_metric}'
+
+    # Handle sklearn case where it might just be 'accuracy'
+    if all_runs_metrics_list:
+        first_run = all_runs_metrics_list[0]
+        if base_metric in first_run.columns and train_col not in first_run.columns:
+            train_col = base_metric
+
+    # Determine metric properties
+    lower_is_better = any(x in base_metric.lower() for x in ['loss', 'error', 'mse', 'mae', 'rmse'])
+    bounded_0_1 = any(x in base_metric.lower() for x in ['accuracy', 'auc', 'precision', 'recall', 'f1'])
+
+    # Better metric name display
+    metric_display = base_metric.replace('_', ' ').title()
+    if base_metric.lower() in ['mse', 'mae', 'rmse']:
+        metric_display = base_metric.upper()
+    elif base_metric.lower() == 'auc':
+        metric_display = 'AUC'
+
+    final_metrics_series = to_series(final_metrics_series, val_col)
     if final_test_series is not None:
-        final_test_series = to_series(final_test_series, f'final_test_{metric}')
+        final_test_series = to_series(final_test_series, f'test_{base_metric}')
 
     num_plots = 1 + int(show_histogram) + int(show_boxplot)
-    fig, axes = plt.subplots(nrows=1, ncols=num_plots, figsize=(6 * num_plots, 7))
+    fig, axes = plt.subplots(1, num_plots, figsize=(7 * num_plots, 6))
 
     if num_plots == 1:
         axes = [axes]
 
-    # FIXED: Main variability plot with proper metric name handling
-    axes[0].set_title(f'Training and Validation {metric.replace("val_", "").title()} Across All Runs')
-    axes[0].set_xlabel('Epoch')
-    axes[0].set_ylabel(metric.replace("val_", "").title())
+    # Main variability plot
+    ax = axes[0]
 
-    alphac = min(max(1.5 / len(all_runs_metrics_list), 0.1), 0.9)
+    n_runs = len(all_runs_metrics_list)
+    n_epochs = len(all_runs_metrics_list[0]) if all_runs_metrics_list else 0
 
-    # FIXED: Proper column name construction and data extraction
-    train_col = f'train_{metric}' if not metric.startswith('train_') else metric
-    val_col = f'val_{metric}' if not metric.startswith('val_') else metric
+    if not final_metrics_series.empty:
+        mean_final = np.mean(final_metrics_series)
+        std_final = np.std(final_metrics_series)
+        title = f'{metric_display} Across {n_runs} Training Runs\n(Final: {mean_final:.3f} ± {std_final:.3f})'
+    else:
+        title = f'{metric_display} Across {n_runs} Training Runs'
 
-    # Remove redundant prefixes
-    if train_col.startswith('train_val_'):
-        train_col = train_col.replace('train_val_', 'train_')
-    if val_col.startswith('val_val_'):
-        val_col = val_col.replace('val_val_', 'val_')
+    ax.set_title(title, fontsize=12, fontweight='bold')
+    ax.set_xlabel('Epoch', fontsize=11)
+    ax.set_ylabel(metric_display, fontsize=11)
 
-    for run_data in all_runs_metrics_list:
-        # FIXED: Check if epoch column exists, create if missing
-        if 'epoch' not in run_data.columns:
-            epochs = range(1, len(run_data) + 1)
+    # Force integer-only epoch labels
+    ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
+
+    # Calculate alpha based on number of runs
+    if n_runs <= 5:
+        alpha = 0.8
+    elif n_runs <= 20:
+        alpha = 0.4
+    else:
+        alpha = max(0.15, 1.0 / n_runs * 3)
+
+    # Plot all runs
+    for i, run_data in enumerate(all_runs_metrics_list):
+        epochs = run_data['epoch'] if 'epoch' in run_data.columns else range(1, len(run_data) + 1)
+
+        if i == 0:
+            if train_col in run_data.columns:
+                ax.plot(epochs, run_data[train_col], alpha=alpha,
+                        color=train_color, label='Training')
+            if val_col in run_data.columns:
+                ax.plot(epochs, run_data[val_col], alpha=alpha,
+                        color=val_color, label='Validation')
         else:
-            epochs = run_data['epoch']
+            if train_col in run_data.columns:
+                ax.plot(epochs, run_data[train_col], alpha=alpha,
+                        color=train_color)
+            if val_col in run_data.columns:
+                ax.plot(epochs, run_data[val_col], alpha=alpha,
+                        color=val_color)
 
-        if train_col in run_data.columns:
-            axes[0].plot(epochs, run_data[train_col],
-                         alpha=alphac, linestyle='-', color=train_color, label='_nolegend_')
-        if val_col in run_data.columns:
-            axes[0].plot(epochs, run_data[val_col],
-                         alpha=alphac, linestyle='-', color=val_color, label='_nolegend_')
+    # Add mean lines if requested and multiple runs exist
+    if show_mean_lines and n_runs > 1:
+        train_runs = [run[train_col].values for run in all_runs_metrics_list
+                      if train_col in run.columns]
+        val_runs = [run[val_col].values for run in all_runs_metrics_list
+                    if val_col in run.columns]
 
-    # FIXED: Clean legend labels
-    clean_metric_name = metric.replace('val_', '').replace('train_', '').title()
-    axes[0].plot([], [], color=train_color, label=f'Training {clean_metric_name}')
-    axes[0].plot([], [], color=val_color, label=f'Validation {clean_metric_name}')
-    axes[0].legend(loc='upper right')
-    axes[0].grid(True)
+        if train_runs:
+            train_mean = np.mean(train_runs, axis=0)
+            epochs_array = range(1, len(train_mean) + 1)
+            ax.plot(epochs_array, train_mean, color=train_color, linewidth=2.5,
+                    linestyle='-', label='Mean Training', zorder=10)
+
+        if val_runs:
+            val_mean = np.mean(val_runs, axis=0)
+            epochs_array = range(1, len(val_mean) + 1)
+            ax.plot(epochs_array, val_mean, color=val_color, linewidth=2.5,
+                    linestyle='-', label='Mean Validation', zorder=10)
+
+    ax.legend(loc='best', framealpha=0.9)
+    ax.grid(True, alpha=0.3)
+
+    # Set y-limits based on metric type
+    if bounded_0_1:
+        ax.set_ylim([0, 1.05])
+    # Otherwise let matplotlib auto-scale
 
     plot_index = 1
 
-    # Histogram (this part should be working)
+    # Histogram (rotated/horizontal)
     if show_histogram and not final_metrics_series.empty:
-        sn.histplot(y=final_metrics_series, bins=10, kde=True, color='skyblue',
-                    ax=axes[plot_index], label='Validation')
+        ax = axes[plot_index]
+
+        mean_final = np.mean(final_metrics_series)
+        std_final = np.std(final_metrics_series)
+
+        # Horizontal histogram with y parameter
+        sn.histplot(y=final_metrics_series, bins='auto', kde=True,
+                    color=val_color, alpha=0.6, ax=ax, stat='density',
+                    label='Validation')
+
         if final_test_series is not None and not final_test_series.empty:
-            sn.histplot(y=final_test_series, bins=10, kde=True, color='green',
-                        ax=axes[plot_index], label='Test')
-        axes[plot_index].set_title(f'Distribution of Final {clean_metric_name}')
-        axes[plot_index].set_xlabel('Frequency of Runs')
-        axes[plot_index].set_ylabel(f'Final {clean_metric_name}')
-        axes[plot_index].grid(axis='x', linestyle='--', alpha=0.7)
-        axes[plot_index].legend()
+            sn.histplot(y=final_test_series, bins='auto', kde=True,
+                        color='#2ca02c', alpha=0.6, ax=ax, stat='density',
+                        label='Test')
+
+        # Horizontal line for mean
+        ax.axhline(mean_final, color=val_color, linestyle='--', linewidth=2)
+
+        # Position annotation for horizontal histogram
+        x_pos = ax.get_xlim()[1] * 0.7
+
+        ax.text(x_pos, mean_final,
+                f'μ={mean_final:.3f}\nσ={std_final:.3f}',
+                ha='center', va='bottom', fontsize=10,
+                bbox=dict(boxstyle="round,pad=0.3",
+                          facecolor="white",
+                          edgecolor=val_color,
+                          alpha=0.8))
+
+        ax.set_title(f'Distribution of Final {metric_display}', fontsize=12)
+        ax.set_ylabel(f'Final {metric_display}', fontsize=11)
+        ax.set_xlabel('Density', fontsize=11)
+        ax.legend()
+        ax.grid(axis='x', alpha=0.3)
+
         plot_index += 1
 
-    # Box plot
+    # Boxplot
     if show_boxplot and not final_metrics_series.empty:
-        boxplot_data = {'Validation': final_metrics_series}
-        if final_test_series is not None and not final_test_series.empty:
-            boxplot_data['Test'] = final_test_series
-        boxplot_df = pd.DataFrame(boxplot_data)
-        sn.boxplot(data=boxplot_df, orient='v', ax=axes[plot_index])
-        axes[plot_index].set_title(f'Box Plot of Final {clean_metric_name}')
-        axes[plot_index].set_ylabel(f'Final {clean_metric_name}')
-        axes[plot_index].grid(axis='y', linestyle='--', alpha=0.7)
+        ax = axes[plot_index]
 
-    plt.tight_layout()
+        data_to_plot = [final_metrics_series.values]
+        labels = ['Validation']
+        colors = [val_color]
+
+        if final_test_series is not None and not final_test_series.empty:
+            data_to_plot.append(final_test_series.values)
+            labels.append('Test')
+            colors.append('#2ca02c')
+
+        bp = ax.boxplot(data_to_plot, labels=labels, patch_artist=True,
+                        showmeans=True, meanprops=dict(marker='D',
+                                                       markerfacecolor='red',
+                                                       markeredgecolor='red'))
+
+        for patch, color in zip(bp['boxes'], colors):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.6)
+
+        ax.set_ylabel(f'Final {metric_display}', fontsize=11)
+        ax.set_title(f'Final {metric_display} Summary', fontsize=12)
+        ax.grid(axis='y', alpha=0.3)
+
+    plt.suptitle(f'Variability Study: {n_runs} Runs × {n_epochs} Epochs',
+                 fontsize=14, fontweight='bold')
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
     plt.show()
 
 
