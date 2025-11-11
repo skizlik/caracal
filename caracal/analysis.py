@@ -1112,7 +1112,8 @@ def assess_training_stability(loss_histories: List[pd.Series],
         'final_loss_cv': np.std(final_losses) / np.mean(final_losses) if np.mean(final_losses) > 0 else float('inf'),
         'final_window_std_mean': np.mean([np.std(run_window) for run_window in final_window_losses]),
         'between_run_variance': np.var(np.mean(final_window_losses, axis=1)),
-        'within_run_variance_mean': np.mean([np.var(run_window) for run_window in final_window_losses])
+        'within_run_variance_mean': np.mean([np.var(run_window) for run_window in final_window_losses]),
+        'final_losses_list': final_losses.tolist()
     }
 
     # Convergence assessment for each run

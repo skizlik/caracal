@@ -948,19 +948,26 @@ def plot_training_stability(stability_results: Dict[str, Any], figsize: Tuple[in
 
     # Top left: Final loss distribution
     ax1 = axes[0, 0]
+    # Check if the REAL data is present
+    if 'final_losses_list' in stability_results:
+        final_losses = stability_results['final_losses_list']  # Use real data
+        mean_loss = stability_results['final_loss_mean']
+        std_loss = stability_results['final_loss_std']
+        n_runs = stability_results['n_runs']
 
-    # Create mock data for visualization (in real implementation, you'd use the actual loss values)
-    mean_loss = stability_results['final_loss_mean']
-    std_loss = stability_results['final_loss_std']
-    n_runs = stability_results['n_runs']
+        # Plot the TRUE histogram
+        ax1.hist(final_losses, bins=min(10, n_runs // 2 + 1), alpha=0.7, color='lightblue', edgecolor='black')
 
-    # Generate approximate distribution
-    final_losses = np.random.normal(mean_loss, std_loss, n_runs)
+        # Overlay mean and std lines
+        ax1.axvline(mean_loss, color='red', linestyle='--', label=f'Mean: {mean_loss:.4f}')
+        ax1.axvline(mean_loss - std_loss, color='orange', linestyle=':', alpha=0.7, label=f'±1 std')
+        ax1.axvline(mean_loss + std_loss, color='orange', linestyle=':', alpha=0.7)
+        ax1.legend()
+    else:
+        # Fallback if the data isn't provided (e.g., old results object)
+        ax1.text(0.5, 0.5, 'No raw loss data provided\n(Missing "final_losses_list")',
+                 ha='center', va='center', color='gray')
 
-    ax1.hist(final_losses, bins=min(10, n_runs // 2 + 1), alpha=0.7, color='lightblue', edgecolor='black')
-    ax1.axvline(mean_loss, color='red', linestyle='--', label=f'Mean: {mean_loss:.4f}')
-    ax1.axvline(mean_loss - std_loss, color='orange', linestyle=':', alpha=0.7, label=f'±1 std')
-    ax1.axvline(mean_loss + std_loss, color='orange', linestyle=':', alpha=0.7)
     ax1.set_xlabel('Final Loss')
     ax1.set_ylabel('Frequency')
     ax1.set_title('Final Loss Distribution')
