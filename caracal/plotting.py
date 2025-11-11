@@ -580,84 +580,206 @@ def plot_variability_summary(all_runs_metrics_list: List[pd.DataFrame],
     plt.show()
 
 
-def plot_multiple_comparisons(comparison_results: Dict[str, Any], figsize: Tuple[int, int] = (12, 8)):
+def plot_multiple_comparisons(comparison_results: Dict[str, Any],
+                              figsize: Tuple[int, int] = (14, 10),
+                              show_effect_sizes: bool = True,
+                              show_corrected: bool = True):
     """
-    Visualize results from compare_multiple_models function.
+    Enhanced visualization of compare_multiple_models results.
 
-    Args:
-        comparison_results: Results dictionary from compare_multiple_models()
-        figsize: Figure size tuple
+    Shows:
+    - Overall test significance with interpretation
+    - Effect sizes with confidence information
+    - Pairwise comparisons with original and corrected p-values
+    - Summary statistics panel
     """
     _check_matplotlib()
+    _check_seaborn()
 
-    fig, axes = plt.subplots(2, 2, figsize=figsize)
+    # Create figure with better layout
+    fig = plt.figure(figsize=figsize)
+    gs = fig.add_gridspec(3, 2, hspace=0.3, wspace=0.3)
 
-    # Top left: Overall test result
-    ax1 = axes[0, 0]
     overall_result = comparison_results['overall_test']
 
+    # 1. Overall test result (top left)
+    ax1 = fig.add_subplot(gs[0, 0])
+
     p_val = overall_result.p_value
-    color = 'red' if overall_result.is_significant() else 'gray'
+    is_sig = overall_result.is_significant()
+    color = 'crimson' if is_sig else 'steelblue'
 
-    ax1.bar(['Overall Test'], [p_val], color=color, alpha=0.7)
-    ax1.axhline(y=0.05, color='red', linestyle='--', alpha=0.5, label='α = 0.05')
-    ax1.set_ylabel('P-value')
-    ax1.set_title(f'{overall_result.test_name}\np = {p_val:.4f}')
-    ax1.legend()
+    ax1.barh(['Overall Test'], [p_val], color=color, alpha=0.7, edgecolor='black', linewidth=1.5)
+    ax1.axvline(x=0.05, color='red', linestyle='--', alpha=0.8, linewidth=2, label='α = 0.05')
+    ax1.set_xlabel('P-value', fontsize=11, fontweight='bold')
+    ax1.set_title(f'{overall_result.test_name}\n{"Significant" if is_sig else "Not Significant"}',
+                  fontsize=12, fontweight='bold', color=color)
+    ax1.legend(loc='upper right')
+    ax1.grid(axis='x', alpha=0.3)
 
-    # Top right: Effect size
-    ax2 = axes[0, 1]
+    # Add text annotation
+    ax1.text(p_val, 0, f' p={p_val:.4f}',
+             va='center', ha='left' if p_val < 0.5 else 'right',
+             fontsize=10, fontweight='bold')
+
+    # 2. Effect size visualization (top right)
+    ax2 = fig.add_subplot(gs[0, 1])
+
+    if overall_result.effect_size is not None and show_effect_sizes:
+        effect_colors = {
+            'negligible': '#d3d3d3',
+            'small': '#87CEEB',
+            'medium': '#FFA500',
+            'large': '#DC143C'
+        }
+        interpretation = overall_result.effect_size_interpretation
+        color = effect_colors.get(interpretation, 'gray')
+
+        # Create a more informative effect size plot
+        ax2.barh([overall_result.effect_size_name], [overall_result.effect_size],
+                 color=color, alpha=0.8, edgecolor='black', linewidth=1.5)
+        ax2.set_xlabel('Effect Size', fontsize=11, fontweight='bold')
+        ax2.set_title(f'Overall Effect Size\n{interpretation.title()}',
+                      fontsize=12, fontweight='bold')
+        ax2.grid(axis='x', alpha=0.3)
+
+        # Add interpretation thresholds
+        thresholds = {'small': 0.01, 'medium': 0.06, 'large': 0.14}  # for eta-squared
+        if 'eta' in overall_result.effect_size_name.lower():
+            for label, thresh in thresholds.items():
+                ax2.axvline(thresh, color='gray', linestyle=':', alpha=0.5)
+                ax2.text(thresh, -0.3, label, ha='center', fontsize=8, style='italic')
+    else:
+        ax2.text(0.5, 0.5, 'Effect size not available',
+                 ha='center', va='center', transform=ax2.transAxes)
+        ax2.axis('off')
+
+    # 3. Summary statistics (middle left)
+    ax3 = fig.add_subplot(gs[1, 0])
+    ax3.axis('off')
+
+    summary_lines = [
+        "Statistical Summary",
+        "=" * 30,
+        f"Test: {overall_result.test_name}",
+        f"Statistic: {overall_result.statistic:.3f}",
+        f"P-value: {overall_result.p_value:.4f}",
+        f"Significance: {'Yes ✓' if is_sig else 'No ✗'}",
+        "",
+    ]
+
     if overall_result.effect_size is not None:
-        effect_colors = {'negligible': 'lightgray', 'small': 'lightblue', 'medium': 'orange', 'large': 'red'}
-        color = effect_colors.get(overall_result.effect_size_interpretation, 'gray')
-
-        ax2.bar(['Effect Size'], [overall_result.effect_size], color=color, alpha=0.7)
-        ax2.set_ylabel(overall_result.effect_size_name)
-        ax2.set_title(f'Overall Effect Size\n{overall_result.effect_size_interpretation}')
-
-    # Bottom: Pairwise comparison results
-    ax3 = axes[1, :]
-    ax3 = plt.subplot(2, 1, 2)  # Span both bottom columns
+        summary_lines.extend([
+            f"Effect Size:",
+            f"  {overall_result.effect_size_name}: {overall_result.effect_size:.3f}",
+            f"  Interpretation: {overall_result.effect_size_interpretation}",
+            ""
+        ])
 
     if 'pairwise_comparisons' in comparison_results:
-        pairwise = comparison_results['pairwise_comparisons']
+        n_comparisons = len(comparison_results['pairwise_comparisons'])
+        n_significant = len(comparison_results.get('significant_comparisons', []))
+        summary_lines.extend([
+            f"Pairwise Comparisons:",
+            f"  Total: {n_comparisons}",
+            f"  Significant: {n_significant} ({n_significant / n_comparisons * 100:.1f}%)",
+            f"  Correction: {comparison_results.get('correction_method', 'none')}"
+        ])
 
+    ax3.text(0.05, 0.95, '\n'.join(summary_lines),
+             transform=ax3.transAxes, fontfamily='monospace',
+             fontsize=10, va='top',
+             bbox=dict(boxstyle='round,pad=0.5', facecolor='wheat', alpha=0.3))
+
+    # 4. Assumptions check (middle right)
+    ax4 = fig.add_subplot(gs[1, 1])
+    ax4.axis('off')
+
+    if overall_result.assumptions_met:
+        assumption_lines = ["Assumption Checks", "=" * 30]
+        for assumption, met in overall_result.assumptions_met.items():
+            status = "✓" if met else "✗"
+            color_code = "green" if met else "red"
+            assumption_lines.append(f"{status} {assumption.replace('_', ' ').title()}")
+
+        if overall_result.warnings:
+            assumption_lines.extend(["", "Warnings:"])
+            for warning in overall_result.warnings[:3]:  # Show first 3 warnings
+                assumption_lines.append(f"  ⚠ {warning[:50]}...")
+
+        ax4.text(0.05, 0.95, '\n'.join(assumption_lines),
+                 transform=ax4.transAxes, fontfamily='monospace',
+                 fontsize=9, va='top',
+                 bbox=dict(boxstyle='round,pad=0.5', facecolor='lightblue', alpha=0.3))
+
+    # 5. Pairwise comparisons (bottom span)
+    if 'pairwise_comparisons' in comparison_results:
+        ax5 = fig.add_subplot(gs[2, :])
+
+        pairwise = comparison_results['pairwise_comparisons']
         comparison_names = list(pairwise.keys())
+
+        # Shorten names if too long
+        display_names = [name.replace('_vs_', '\nvs\n') for name in comparison_names]
+
         p_values = [result.p_value for result in pairwise.values()]
-        corrected_p_values = [result.corrected_p_value or result.p_value for result in pairwise.values()]
+        corrected_p_values = [result.corrected_p_value or result.p_value
+                              for result in pairwise.values()]
         significant = [result.is_significant() for result in pairwise.values()]
 
         x = np.arange(len(comparison_names))
         width = 0.35
 
-        # Plot original and corrected p-values
-        bars1 = ax3.bar(x - width / 2, p_values, width, label='Original p-value', alpha=0.7)
-        bars2 = ax3.bar(x + width / 2, corrected_p_values, width, label='Corrected p-value', alpha=0.7)
+        # Plot bars
+        bars1 = ax5.bar(x - width / 2, p_values, width, label='Original p-value',
+                        alpha=0.7, edgecolor='black', linewidth=0.5)
+        bars2 = ax5.bar(x + width / 2, corrected_p_values, width,
+                        label=f'Corrected p-value ({comparison_results.get("correction_method", "")})',
+                        alpha=0.7, edgecolor='black', linewidth=0.5)
 
-        # Color bars by significance
+        # Color significant bars
         for bar, sig in zip(bars2, significant):
-            bar.set_color('red' if sig else 'gray')
+            bar.set_color('crimson' if sig else 'steelblue')
 
-        ax3.axhline(y=0.05, color='red', linestyle='--', alpha=0.5, label='α = 0.05')
-        ax3.set_xlabel('Pairwise Comparisons')
-        ax3.set_ylabel('P-value')
-        ax3.set_title(f'Pairwise Comparisons ({comparison_results.get("correction_method", "unknown")} correction)')
-        ax3.set_xticks(x)
-        ax3.set_xticklabels(comparison_names, rotation=45, ha='right')
-        ax3.legend()
-        ax3.set_yscale('log')  # Log scale for better p-value visualization
+        # Add significance line
+        ax5.axhline(y=0.05, color='red', linestyle='--', alpha=0.8,
+                    linewidth=2, label='α = 0.05', zorder=0)
 
-    plt.tight_layout()
+        ax5.set_xlabel('Pairwise Comparisons', fontsize=11, fontweight='bold')
+        ax5.set_ylabel('P-value (log scale)', fontsize=11, fontweight='bold')
+        ax5.set_title(
+            f'Pairwise Comparisons with {comparison_results.get("correction_method", "unknown").title()} Correction',
+            fontsize=12, fontweight='bold')
+        ax5.set_xticks(x)
+        ax5.set_xticklabels(display_names, rotation=0, ha='center', fontsize=9)
+        ax5.legend(loc='upper right')
+        ax5.set_yscale('log')
+        ax5.grid(axis='y', alpha=0.3, which='both')
+
+        # Add asterisks for significance
+        for i, (corr_p, sig) in enumerate(zip(corrected_p_values, significant)):
+            if sig:
+                y_pos = corr_p * 1.2
+                ax5.text(i, y_pos, '***' if corr_p < 0.001 else '**' if corr_p < 0.01 else '*',
+                         ha='center', va='bottom', fontsize=14, fontweight='bold', color='crimson')
+
+    plt.suptitle('Multiple Comparisons Analysis', fontsize=14, fontweight='bold', y=0.98)
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
     plt.show()
 
 
-def plot_pairwise_comparison_matrix(comparison_results: Dict[str, Any], figsize: Tuple[int, int] = (10, 8)):
+def plot_pairwise_comparison_matrix(comparison_results: Dict[str, Any],
+                                    figsize: Tuple[int, int] = (12, 10),
+                                    show_effect_sizes: bool = True,
+                                    annotate_significance: bool = True):
     """
-    Create a matrix visualization of pairwise comparison results.
+    Enhanced matrix visualization of pairwise comparisons with optional effect sizes.
 
     Args:
-        comparison_results: Results dictionary from compare_multiple_models()
-        figsize: Figure size tuple
+        comparison_results: Results from compare_multiple_models()
+        figsize: Figure size
+        show_effect_sizes: If True, show effect sizes in a third heatmap
+        annotate_significance: If True, add significance stars to annotations
     """
     _check_matplotlib()
     _check_seaborn()
@@ -668,7 +790,7 @@ def plot_pairwise_comparison_matrix(comparison_results: Dict[str, Any], figsize:
 
     pairwise = comparison_results['pairwise_comparisons']
 
-    # Extract model names from comparison names
+    # Extract model names
     model_names = set()
     for comp_name in pairwise.keys():
         names = comp_name.split('_vs_')
@@ -677,175 +799,116 @@ def plot_pairwise_comparison_matrix(comparison_results: Dict[str, Any], figsize:
     model_names = sorted(list(model_names))
     n_models = len(model_names)
 
-    # Create matrices for p-values and significance
+    # Initialize matrices
     p_value_matrix = np.ones((n_models, n_models))
     significance_matrix = np.zeros((n_models, n_models))
+    effect_size_matrix = np.zeros((n_models, n_models))
 
+    # Fill matrices
     for comp_name, result in pairwise.items():
         name1, name2 = comp_name.split('_vs_')
         i, j = model_names.index(name1), model_names.index(name2)
 
+        # P-values (use corrected if available)
         p_val = result.corrected_p_value if result.corrected_p_value is not None else result.p_value
-
         p_value_matrix[i, j] = p_val
         p_value_matrix[j, i] = p_val
 
+        # Significance
         if result.is_significant():
             significance_matrix[i, j] = 1
             significance_matrix[j, i] = 1
 
-    fig, axes = plt.subplots(1, 2, figsize=figsize)
+        # Effect sizes
+        if result.effect_size is not None:
+            effect_size_matrix[i, j] = result.effect_size
+            effect_size_matrix[j, i] = result.effect_size
 
-    # P-value heatmap
-    sn.heatmap(p_value_matrix, xticklabels=model_names, yticklabels=model_names,
-               annot=True, fmt='.3f', cmap='viridis_r', ax=axes[0])
-    axes[0].set_title('P-values (Corrected)')
+    # Create figure
+    n_plots = 2 if not show_effect_sizes or not np.any(effect_size_matrix) else 3
+    fig, axes = plt.subplots(1, n_plots, figsize=figsize)
 
-    # Significance heatmap
-    sn.heatmap(significance_matrix, xticklabels=model_names, yticklabels=model_names,
-               annot=True, fmt='d', cmap='RdYlBu_r', cbar_kws={'label': 'Significant'}, ax=axes[1])
-    axes[1].set_title('Significant Differences (α = 0.05)')
+    if n_plots == 1:
+        axes = [axes]
 
-    plt.tight_layout()
+    # Custom annotation format with significance stars
+    def format_annotation(data, i, j):
+        val = data[i, j]
+        if i == j:
+            return ""
+
+        text = f'{val:.3f}'
+
+        if annotate_significance and significance_matrix[i, j] == 1:
+            if val < 0.001:
+                text += '\n***'
+            elif val < 0.01:
+                text += '\n**'
+            elif val < 0.05:
+                text += '\n*'
+
+        return text
+
+    # 1. P-value heatmap with better colors
+    annot_matrix = np.array([[format_annotation(p_value_matrix, i, j)
+                              for j in range(n_models)]
+                             for i in range(n_models)])
+
+    mask = np.eye(n_models, dtype=bool)  # Mask diagonal
+
+    sn.heatmap(p_value_matrix,
+               xticklabels=model_names, yticklabels=model_names,
+               annot=annot_matrix, fmt='',
+               cmap='RdYlGn_r',  # Red for high p-values, green for low
+               vmin=0, vmax=0.1,  # Focus on significant range
+               ax=axes[0],
+               mask=mask,
+               cbar_kws={'label': 'P-value'},
+               linewidths=0.5,
+               linecolor='gray')
+    axes[0].set_title(f'Corrected P-values\n({comparison_results.get("correction_method", "unknown")} correction)',
+                      fontsize=12, fontweight='bold')
+
+    # 2. Significance heatmap with better styling
+    sig_annot = np.array([['✓' if significance_matrix[i, j] and i != j else ''
+                           for j in range(n_models)]
+                          for i in range(n_models)])
+
+    sn.heatmap(significance_matrix,
+               xticklabels=model_names, yticklabels=model_names,
+               annot=sig_annot, fmt='',
+               cmap='RdYlGn',  # Green for significant
+               vmin=0, vmax=1,
+               ax=axes[1],
+               mask=mask,
+               cbar_kws={'label': 'Significant', 'ticks': [0, 1]},
+               linewidths=0.5,
+               linecolor='gray')
+    axes[1].set_title('Significant Differences (α = 0.05)',
+                      fontsize=12, fontweight='bold')
+
+    # 3. Effect size heatmap (if available and requested)
+    if show_effect_sizes and np.any(effect_size_matrix):
+        effect_annot = np.array([[f'{effect_size_matrix[i, j]:.3f}' if i != j else ''
+                                  for j in range(n_models)]
+                                 for i in range(n_models)])
+
+        sn.heatmap(np.abs(effect_size_matrix),  # Use absolute values for color
+                   xticklabels=model_names, yticklabels=model_names,
+                   annot=effect_annot, fmt='',
+                   cmap='YlOrRd',  # Yellow to red for effect size
+                   ax=axes[2],
+                   mask=mask,
+                   cbar_kws={'label': 'Effect Size (absolute)'},
+                   linewidths=0.5,
+                   linecolor='gray')
+        axes[2].set_title('Effect Sizes\n(rank-biserial correlation)',
+                          fontsize=12, fontweight='bold')
+
+    plt.suptitle(f'Pairwise Comparison Matrix ({n_models} models, {n_models * (n_models - 1) // 2} comparisons)',
+                 fontsize=14, fontweight='bold')
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
     plt.show()
-
-
-def plot_variability_study_summary(results: 'VariabilityStudyResults', metric: str = 'val_accuracy',
-                                   figsize: Tuple[int, int] = (15, 10)):
-    """
-    Create a comprehensive visualization of variability study results.
-
-    Args:
-        results: VariabilityStudyResults object
-        metric: Metric to focus on for the summary
-        figsize: Figure size tuple
-    """
-    _check_matplotlib()
-    _check_seaborn()
-
-    fig = plt.figure(figsize=figsize)
-
-    # Create subplot layout
-    gs = fig.add_gridspec(3, 3, hspace=0.3, wspace=0.3)
-
-    # 1. Training histories (top row, spans 2 columns)
-    ax1 = fig.add_subplot(gs[0, :2])
-
-    for i, run_df in enumerate(results.all_runs_metrics):
-        if metric in run_df.columns:
-            ax1.plot(run_df['epoch'], run_df[metric], alpha=0.6, label=f'Run {i + 1}')
-
-    ax1.set_xlabel('Epoch')
-    ax1.set_ylabel(metric.title())
-    ax1.set_title(f'Training Histories: {metric}')
-    ax1.grid(True, alpha=0.3)
-
-    # 2. Final metric distribution (top right)
-    ax2 = fig.add_subplot(gs[0, 2])
-
-    try:
-        final_values = results.get_final_metrics(metric)
-        values = list(final_values.values())
-
-        ax2.hist(values, bins=min(10, len(values) // 2 + 1), alpha=0.7, color='skyblue', edgecolor='black')
-        ax2.axvline(np.mean(values), color='red', linestyle='--', label=f'Mean: {np.mean(values):.3f}')
-        ax2.set_xlabel(f'Final {metric}')
-        ax2.set_ylabel('Frequency')
-        ax2.set_title('Final Metric Distribution')
-        ax2.legend()
-
-    except Exception as e:
-        ax2.text(0.5, 0.5, f'Could not plot {metric}\n{str(e)}',
-                 ha='center', va='center', transform=ax2.transAxes)
-
-    # 3. Run-to-run variability (middle left)
-    ax3 = fig.add_subplot(gs[1, 0])
-
-    try:
-        values = list(final_values.values())
-        run_numbers = range(1, len(values) + 1)
-
-        ax3.plot(run_numbers, values, 'o-', alpha=0.7)
-        ax3.fill_between(run_numbers,
-                         [np.mean(values) - np.std(values)] * len(values),
-                         [np.mean(values) + np.std(values)] * len(values),
-                         alpha=0.2, label=f'±1 std ({np.std(values):.3f})')
-        ax3.axhline(np.mean(values), color='red', linestyle='--', alpha=0.8)
-        ax3.set_xlabel('Run Number')
-        ax3.set_ylabel(f'Final {metric}')
-        ax3.set_title('Run-to-Run Variability')
-        ax3.legend()
-        ax3.grid(True, alpha=0.3)
-
-    except Exception as e:
-        ax3.text(0.5, 0.5, f'Error plotting variability\n{str(e)}',
-                 ha='center', va='center', transform=ax3.transAxes)
-
-    # 4. Summary statistics (middle center)
-    ax4 = fig.add_subplot(gs[1, 1])
-    ax4.axis('off')
-
-    try:
-        stats_text = [
-            f"Variability Study Summary",
-            f"=" * 25,
-            f"Runs: {results.n_runs}",
-            f"Metric: {metric}",
-            f"",
-            f"Final {metric}:",
-            f"  Mean: {np.mean(values):.4f}",
-            f"  Std:  {np.std(values):.4f}",
-            f"  CV:   {np.std(values) / np.mean(values) * 100:.1f}%",
-            f"  Min:  {np.min(values):.4f}",
-            f"  Max:  {np.max(values):.4f}",
-            f"  Range: {np.max(values) - np.min(values):.4f}",
-        ]
-
-        ax4.text(0.05, 0.95, '\n'.join(stats_text), transform=ax4.transAxes,
-                 fontfamily='monospace', fontsize=10, va='top')
-
-    except Exception as e:
-        ax4.text(0.5, 0.5, f'Error computing statistics\n{str(e)}',
-                 ha='center', va='center', transform=ax4.transAxes)
-
-    # 5. Convergence assessment (middle right)
-    ax5 = fig.add_subplot(gs[1, 2])
-
-    try:
-        from .analysis import check_convergence
-
-        convergence_results = []
-        for run_df in results.all_runs_metrics:
-            if metric in run_df.columns:
-                converged = check_convergence(run_df[metric])
-                convergence_results.append(converged)
-
-        convergence_rate = sum(convergence_results) / len(convergence_results) if convergence_results else 0
-
-        # Pie chart of convergence
-        labels = ['Converged', 'Not Converged']
-        sizes = [sum(convergence_results), len(convergence_results) - sum(convergence_results)]
-        colors = ['green', 'red']
-
-        ax5.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
-        ax5.set_title(f'Convergence Rate\n({convergence_rate:.1%})')
-
-    except Exception as e:
-        ax5.text(0.5, 0.5, f'Convergence analysis failed\n{str(e)}',
-                 ha='center', va='center', transform=ax5.transAxes)
-
-    # 6. Available metrics (bottom span)
-    ax6 = fig.add_subplot(gs[2, :])
-    ax6.axis('off')
-
-    available_metrics = results.get_available_metrics()
-    metrics_text = f"Available metrics for analysis: {', '.join(available_metrics)}"
-    ax6.text(0.5, 0.5, metrics_text, ha='center', va='center', transform=ax6.transAxes,
-             fontsize=12, bbox=dict(boxstyle="round,pad=0.3", facecolor="lightblue", alpha=0.5))
-
-    plt.suptitle(f'Variability Study Summary: {metric}', fontsize=16, y=0.95)
-    plt.show()
-
 
 def plot_training_stability(stability_results: Dict[str, Any], figsize: Tuple[int, int] = (12, 8)):
     """
