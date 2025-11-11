@@ -5,10 +5,11 @@ from typing import Dict, Any, Optional, List, Tuple, Union, Callable, TYPE_CHECK
 # Optional plotting dependencies
 try:
     import matplotlib.pyplot as plt
-
+    from matplotlib.figure import Figure
     HAS_MATPLOTLIB = True
 except ImportError:
     plt = None
+    Figure = None
     HAS_MATPLOTLIB = False
 
 try:
@@ -64,20 +65,23 @@ def _check_tensorflow_utils():
         raise ImportError("TensorFlow required for multi-class plotting. Install with: pip install tensorflow")
 
 
-def plot_confusion_matrix(cm_df: pd.DataFrame, title: str = ""):
+def plot_confusion_matrix(cm_df: pd.DataFrame, title: str = "", show: bool = True) -> 'Figure':
     """Plots a confusion matrix heatmap from a DataFrame."""
     _check_matplotlib()
     _check_seaborn()
 
-    plt.figure(figsize=(10, 8))
+    fig = plt.figure(figsize=(10, 8))
     sn.heatmap(cm_df, annot=True, fmt="d", cmap='Blues')
     plt.title(title if title else "Confusion Matrix")
     plt.xlabel("Predicted Label")
     plt.ylabel("True Label")
-    plt.show()
+    if show:
+        plt.show()
+    return fig
 
 
-def plot_training_history(history: Any, title: str = None, metrics: List[str] = None):
+
+def plot_training_history(history: Any, title: str = None, metrics: List[str] = None, show: bool = True) -> Figure:
     """
     Plot training and validation metrics from a history object.
 
@@ -235,16 +239,18 @@ def plot_training_history(history: Any, title: str = None, metrics: List[str] = 
 
     fig.suptitle(title, fontsize=14, fontweight='bold')
     plt.tight_layout(rect=[0, 0, 1, 0.96])
-    plt.show()
+    if show:
+        plt.show()
+    return fig
 
-def plot_roc_curve(model_wrapper: 'BaseModelWrapper', X_test: np.ndarray, y_test: np.ndarray, title: str = ""):
+def plot_roc_curve(model_wrapper: 'BaseModelWrapper', X_test: np.ndarray, y_test: np.ndarray, title: str = "", show: bool = True) -> Figure:
     """Plots the ROC curve for a multi-class model."""
     _check_matplotlib()
     _check_sklearn_metrics()
     _check_tensorflow_utils()
 
     if not hasattr(model_wrapper, 'predict_proba'):
-        print("Model does not have a predict_proba method. Cannot plot ROC curve.")
+        print("Model does not have a predict_proba method. Cannot plot ROC curve.") Figure
         return
 
     y_score = model_wrapper.predict_proba(X_test)
@@ -255,7 +261,7 @@ def plot_roc_curve(model_wrapper: 'BaseModelWrapper', X_test: np.ndarray, y_test
     num_classes = y_score.shape[1]
     y_test_binarized = to_categorical(y_test, num_classes=num_classes)
 
-    plt.figure(figsize=(10, 8))
+    fig = plt.figure(figsize=(10, 8))
 
     for i in range(num_classes):
         fpr, tpr, _ = roc_curve(y_test_binarized[:, i], y_score[:, i])
@@ -269,11 +275,13 @@ def plot_roc_curve(model_wrapper: 'BaseModelWrapper', X_test: np.ndarray, y_test
     plt.ylabel('True Positive Rate')
     plt.title(title if title else 'Receiver Operating Characteristic')
     plt.legend(loc="lower right")
-    plt.show()
+    if show:
+        plt.show()
+    return fig
 
 
 def plot_precision_recall_curve(model_wrapper: 'BaseModelWrapper', X_test: np.ndarray, y_test: np.ndarray,
-                                title: str = ""):
+                                title: str = "", show: bool = True) -> Figure:
     """Plots the Precision-Recall curve for a multi-class model."""
     _check_matplotlib()
     _check_sklearn_metrics()
@@ -291,7 +299,7 @@ def plot_precision_recall_curve(model_wrapper: 'BaseModelWrapper', X_test: np.nd
     num_classes = y_score.shape[1]
     y_test_binarized = to_categorical(y_test, num_classes=num_classes)
 
-    plt.figure(figsize=(10, 8))
+    fig = plt.figure(figsize=(10, 8))
 
     for i in range(num_classes):
         precision, recall, _ = precision_recall_curve(y_test_binarized[:, i], y_score[:, i])
@@ -304,7 +312,9 @@ def plot_precision_recall_curve(model_wrapper: 'BaseModelWrapper', X_test: np.nd
     plt.ylabel('Precision')
     plt.title(title if title else 'Precision-Recall Curve')
     plt.legend(loc="lower left")
-    plt.show()
+    if show:
+        plt.show()
+    return fig
 
 
 def plot_variability_summary(all_runs_metrics_list: List[pd.DataFrame],
@@ -315,7 +325,8 @@ def plot_variability_summary(all_runs_metrics_list: List[pd.DataFrame],
                              val_color: str = '#ff7f0e',
                              show_histogram: bool = True,
                              show_boxplot: bool = False,
-                             show_mean_lines: bool = True):
+                             show_mean_lines: bool = False,
+                             show: bool = True) -> Figure:
     """
     Create a comprehensive visualization of a variability study's results.
 
@@ -577,13 +588,16 @@ def plot_variability_summary(all_runs_metrics_list: List[pd.DataFrame],
     plt.suptitle(f'Variability Study: {n_runs} Runs × {n_epochs} Epochs',
                  fontsize=14, fontweight='bold')
     plt.tight_layout(rect=[0, 0, 1, 0.96])
-    plt.show()
+    if show:
+        plt.show()
+    return fig
 
 
 def plot_multiple_comparisons(comparison_results: Dict[str, Any],
                               figsize: Tuple[int, int] = (14, 10),
                               show_effect_sizes: bool = True,
-                              show_corrected: bool = True):
+                              show_corrected: bool = True,
+                              show: bool = True) -> Figure:
     """
     Enhanced visualization of compare_multiple_models results.
 
@@ -765,13 +779,16 @@ def plot_multiple_comparisons(comparison_results: Dict[str, Any],
 
     plt.suptitle('Multiple Comparisons Analysis', fontsize=14, fontweight='bold', y=0.98)
     plt.tight_layout(rect=[0, 0, 1, 0.96])
-    plt.show()
+    if show:
+        plt.show()
+    return fig
 
 
 def plot_pairwise_comparison_matrix(comparison_results: Dict[str, Any],
                                     figsize: Tuple[int, int] = (12, 10),
                                     show_effect_sizes: bool = True,
-                                    annotate_significance: bool = True):
+                                    annotate_significance: bool = True,
+                                    show: bool = True) -> Figure:
     """
     Enhanced matrix visualization of pairwise comparisons with optional effect sizes.
 
@@ -908,9 +925,12 @@ def plot_pairwise_comparison_matrix(comparison_results: Dict[str, Any],
     plt.suptitle(f'Pairwise Comparison Matrix ({n_models} models, {n_models * (n_models - 1) // 2} comparisons)',
                  fontsize=14, fontweight='bold')
     plt.tight_layout(rect=[0, 0, 1, 0.96])
-    plt.show()
+    if show:
+        plt.show()
+    return fig
 
-def plot_training_stability(stability_results: Dict[str, Any], figsize: Tuple[int, int] = (12, 8)):
+def plot_training_stability(stability_results: Dict[str, Any], figsize: Tuple[int, int] = (12, 8),
+                            show: bool = True) -> Figure:
     """
     Visualize training stability metrics from assess_training_stability().
 
@@ -1006,12 +1026,15 @@ def plot_training_stability(stability_results: Dict[str, Any], figsize: Tuple[in
              ha='center', va='bottom', fontweight='bold')
 
     plt.tight_layout()
-    plt.show()
+    if show:
+        plt.show()
+    return fig
 
 
 def plot_autocorr_vs_lag(data: Union[pd.Series, List[float]],
                          max_lag: int = 20,
-                         title: str = "Autocorrelation of Loss"):
+                         title: str = "Autocorrelation of Loss",
+                         show: bool = True) -> Figure:
     """Plots the autocorrelation of a time series as a function of lag."""
     _check_matplotlib()
 
@@ -1025,24 +1048,27 @@ def plot_autocorr_vs_lag(data: Union[pd.Series, List[float]],
     autocorr_values = [data.autocorr(lag) for lag in range(1, max_lag + 1)]
     lags = range(1, max_lag + 1)
 
-    plt.figure(figsize=(10, 6))
+    fig = plt.figure(figsize=(10, 6))
     plt.stem(lags, autocorr_values, use_line_collection=True)
     plt.title(title)
     plt.xlabel("Lag")
     plt.ylabel("Autocorrelation")
     plt.axhline(y=0, color='r', linestyle='--')
     plt.grid(True)
-    plt.show()
+    if show:
+        plt.show()
+    return fig
 
 
 def plot_averaged_autocorr(lags: List[float],
                            mean_autocorr: List[float],
                            std_autocorr: List[float],
-                           title: str = "Averaged Autocorrelation of Loss"):
+                           title: str = "Averaged Autocorrelation of Loss",
+                           show: bool = True) -> Figure:
     """Plots the averaged autocorrelation with a shaded region for standard deviation."""
     _check_matplotlib()
 
-    plt.figure(figsize=(10, 6))
+    fig = plt.figure(figsize=(10, 6))
     plt.plot(lags, mean_autocorr, 'b-', label='Mean Autocorrelation')
     plt.fill_between(lags,
                      np.array(mean_autocorr) - np.array(std_autocorr),
@@ -1054,13 +1080,16 @@ def plot_averaged_autocorr(lags: List[float],
     plt.axhline(y=0, color='r', linestyle='--')
     plt.legend()
     plt.grid(True)
-    plt.show()
+    if show:
+        plt.show()
+    return fig
 
 
 def plot_pacf_vs_lag(data: Union[pd.Series, List[float]],
                      max_lag: int = 20,
                      title: str = "Partial Autocorrelation of Loss",
-                     alpha: float = 0.05):
+                     alpha: float = 0.05,
+                     show: bool = True) -> Figure:
     """
     Plots the partial autocorrelation of a time series as a function of lag.
 
@@ -1094,7 +1123,7 @@ def plot_pacf_vs_lag(data: Union[pd.Series, List[float]],
     conf_int = conf_int[1:]
     lags = range(1, max_lag + 1)
 
-    plt.figure(figsize=(10, 6))
+    fig = plt.figure(figsize=(10, 6))
 
     # Plot PACF values
     plt.stem(lags, pacf_values, use_line_collection=True, label='PACF')
@@ -1111,14 +1140,17 @@ def plot_pacf_vs_lag(data: Union[pd.Series, List[float]],
     plt.axhline(y=0, color='r', linestyle='--')
     plt.legend()
     plt.grid(True)
-    plt.show()
+    if show:
+        plt.show()
+    return fig
 
 
 def plot_averaged_pacf(lags: List[float],
                        mean_pacf: List[float],
                        std_pacf: List[float],
                        title: str = "Averaged Partial Autocorrelation of Loss",
-                       conf_level: float = 0.95):
+                       conf_level: float = 0.95,
+                       show: bool = True) -> Figure:
     """
     Plots the averaged partial autocorrelation with confidence bands.
 
@@ -1131,7 +1163,7 @@ def plot_averaged_pacf(lags: List[float],
     """
     _check_matplotlib()
 
-    plt.figure(figsize=(10, 6))
+    fig = plt.figure(figsize=(10, 6))
 
     # Plot mean PACF
     plt.plot(lags, mean_pacf, 'b-', label='Mean PACF', linewidth=2)
@@ -1155,4 +1187,6 @@ def plot_averaged_pacf(lags: List[float],
     plt.axhline(y=0, color='r', linestyle='--')
     plt.legend()
     plt.grid(True)
-    plt.show()
+    if show:
+        plt.show()
+    return fig
