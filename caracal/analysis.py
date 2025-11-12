@@ -143,7 +143,7 @@ def check_normality(data: pd.Series, alpha: float = 0.05) -> Tuple[bool, Dict[st
         return False, {"error": "Could not perform normality tests"}
 
     # Consider normal if any test fails to reject normality
-    is_normal = any(test['p_value'] > alpha for test in results.values())
+    is_normal = all(test['p_value'] > alpha for test in results.values())
 
     return is_normal, results
 
