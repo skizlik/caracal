@@ -588,31 +588,16 @@ def kruskal_wallis_test(model_metrics: Dict[str, pd.Series],
     try:
         statistic, p_value = kruskal(*clean_groups)
 
-        # --- FIX STARTS HERE ---
         # Create the result object after computing statistic and p_value
         result = StatisticalTestResult(
             test_name="Kruskal-Wallis H-Test",
             statistic=float(statistic),
             p_value=float(p_value)
         )
-
-        result.sample_sizes = {name: len(group) for name, group in zip(group_names, clean_groups)}
-        result.warnings.extend(size_warnings)
-        result.assumptions_met['adequate_sample_size'] = adequate_size
-
-        # Effect size (epsilon-squared)
-        N = sum(len(group) for group in clean_groups)
-        k = len(clean_groups)
-        if N > k:
-            epsilon_sq = (statistic - k + 1) / (N - k)
-            epsilon_sq = max(0, epsilon_sq)  # Ensure non-negative
-        else:
-            epsilon_sq = 0
-
-        result.effect_size = epsilon_sq
-        result.effect_size_name = "epsilon-squared"
-        result.effect_size_interpretation = _interpret_eta_squared(epsilon_sq)  # Similar interpretation
-        # --- FIX ENDS HERE ---
+    ...
+    result.effect_size = epsilon_sq
+    result.effect_size_name = "epsilon-squared"
+    result.effect_size_interpretation = _interpret_eta_squared(epsilon_sq)  # Similar interpretation
 
     except Exception as e:
         # Create a result object even on failure for consistent return type
