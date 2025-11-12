@@ -694,10 +694,57 @@ def compare_two_models(model1_results: pd.Series, model2_results: pd.Series,
         result = wilcoxon_signed_rank_test(differences, null_value=0, alpha=alpha)
         result.test_name = "Paired Comparison (Wilcoxon Signed-Rank)"
     else:
-        # For independent comparisons, use Mann-Whitney
-        result = mann_whitney_test(clean1, clean2, alpha=alpha)
-        result.test_name = "Independent Comparison (Mann-Whitney U)"
+        # For independent comparisons, use intelligent test selection
 
+        # 1. Check assumptions
+        is_normal1, norm_details1 = check_normality(clean1, alpha=alpha)
+        is_normal2, norm_details2 = check_normality(clean2, alpha=alpha)
+
+        assumptions_met = {
+            'normality_group1': is_normal1,
+            'normality_group2': is_normal2
+        }
+        assumption_details = {
+            'normality_group1': norm_details1,
+            'normality_group2': norm_details2
+        }
+
+        if is_normal1 and is_normal2:
+            # 2. Both are normal: Check variances
+            equal_vars, var_details = check_equal_variances(clean1, clean2, alpha=alpha)
+            assumptions_met['equal_variances'] = equal_vars
+            assumption_details['variance_test'] = var_details
+
+            if equal_vars:
+                # 3a. Normal + Equal Variance = Student's t-test
+                test_name = "Independent Comparison (Student's t-test)"
+                statistic, p_value = ttest_ind(clean1, clean2, equal_var=True)
+                effect_size, es_interp = cohens_d(clean1, clean2, pooled=True)
+                es_name = "Cohen's d"
+            else:
+                # 3b. Normal + Unequal Variance = Welch's t-test
+                test_name = "Independent Comparison (Welch's t-test)"
+                statistic, p_value = ttest_ind(clean1, clean2, equal_var=False)
+                effect_size, es_interp = cohens_d(clean1, clean2, pooled=False)
+                es_name = "Cohen's d (unpooled)"
+
+            result = StatisticalTestResult(
+                test_name=test_name,
+                statistic=statistic,
+                p_value=p_value,
+                effect_size=effect_size,
+                effect_size_name=es_name,
+                effect_size_interpretation=es_interp
+            )
+
+        else:
+            # 4. Not normal: Use Mann-Whitney U test
+            result = mann_whitney_test(clean1, clean2, alpha=alpha)
+            result.test_name = "Independent Comparison (Mann-Whitney U)"
+
+        # Add assumption info to the final result
+        result.assumptions_met.update(assumptions_met)
+        result.assumption_details.update(assumption_details)
     return result
 
 
