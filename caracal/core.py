@@ -77,46 +77,171 @@ class BaseModelWrapper(ABC):
     @abstractmethod
     def fit(self, train_data: Any, validation_data: Optional[Any] = None, **kwargs):
         """
-        Fits the encapsulated model.
-        The type of `train_data` and `validation_data` depends on the
-        concrete implementation (e.g., (X, y) tuple or tf.data.Dataset).
+        Trains (fits) the encapsulated model on the provided data.
+
+        This is an abstract method that must be implemented by concrete subclasses
+        (e.g., KerasModelWrapper, ScikitLearnModelWrapper). The implementation
+        is responsible for handling its specific data format (e.g.,
+        tf.data.Dataset vs. numpy arrays) and storing the training
+        history (if any) in the `self.history` attribute.
+
+        Args:
+            train_data (Any): The data to train the model on. The required
+                format is defined by the subclass (e.g., a tuple (X, y)
+                or a tf.data.Dataset).
+            validation_data (Optional[Any], optional): The data to use for
+                validation during training. The format should be compatible
+                with `train_data`. Defaults to None.
+            **kwargs: Additional, framework-specific arguments to be passed
+                to the model's underlying `.fit()` method (e.g., `epochs`,
+                `batch_size`, `callbacks`).
         """
         pass
 
     @abstractmethod
     def predict(self, data: np.ndarray, **kwargs) -> np.ndarray:
-        """Generates predictions and stores them."""
+        """
+        Generates predictions for the given input data.
+
+        This abstract method must be implemented by subclasses. It is
+        responsible for running the model's prediction logic.
+
+        The implementation should:
+        1.  Generate raw predictions from `self.model`.
+        2.  For classification models, convert probabilities or logits into
+            final class indices (e.g., `np.argmax(..., axis=1)`).
+        3.  For regression models, return the predicted values directly.
+        4.  Store the final predictions in the `self.predictions` attribute.
+        5.  Return the final predictions.
+
+        Args:
+            data (np.ndarray): The input data to generate predictions for.
+            **kwargs: Additional, framework-specific arguments to be passed
+                to the model's underlying `.predict()` method.
+
+        Returns:
+            np.ndarray: An array of predictions. For classification, this
+            should be class indices (integers). For regression, this
+            should be the predicted values (floats).
+        """
         pass
 
     @abstractmethod
     def predict_proba(self, data: np.ndarray, **kwargs) -> np.ndarray:
-        """Generates probability scores for each class."""
+        """
+        Generates class probability predictions for the given input data.
+
+        This abstract method is only applicable for classification models.
+        It must be implemented by subclasses that support probability outputs.
+
+        The implementation should:
+        1.  Generate raw probability scores from `self.model`.
+        2.  Ensure the output is a 2D array of shape `(n_samples, n_classes)`.
+        3.  For binary models with a single sigmoid output, this means
+            stacking `(1-p, p)` to create the 2D array.
+        4.  For multi-class models, this is typically the direct output
+            of a softmax layer.
+
+        Args:
+            data (np.ndarray): The input data to generate probabilities for.
+            **kwargs: Additional, framework-specific arguments to be passed
+                to the model's underlying `.predict_proba()` method.
+
+        Returns:
+            np.ndarray: A 2D array of shape `(n_samples, n_classes)`
+            containing the probability for each class.
+
+        Raises:
+            NotImplementedError: If the underlying model does not support
+            probability predictions (e.g., SVM with linear kernel).
+            ValueError: If called on a regression model.
+        """
         pass
 
     @abstractmethod
     def evaluate(self, data: Any, **kwargs) -> Dict[str, Any]:
         """
-        Evaluates the encapsulated model on a given dataset.
-        Returns a dictionary of metrics.
+        Evaluates the encapsulated model on a given dataset (e.g., test set).
+
+        This abstract method must be implemented by subclasses. Unlike
+        `predict`, the `data` argument here is expected to contain both
+        features and true labels in whatever format the underlying
+        framework requires (e.g., a tuple (X, y) or a tf.data.Dataset).
+
+        Args:
+            data (Any): The data to evaluate the model on, including
+                features and true labels.
+            **kwargs: Additional, framework-specific arguments to be passed
+                to the model's underlying `.evaluate()` method.
+
+        Returns:
+            Dict[str, Any]: A dictionary of metrics, where keys are the
+            metric names (e.g., 'loss', 'accuracy') and values are the
+            scalar metric values.
         """
         pass
 
     @abstractmethod
     def assess(self, true_labels: np.ndarray) -> Dict[str, float]:
         """
-        Provides a quick, high-level assessment of the model's performance.
+        Provides a quick assessment of model performance using stored predictions.
+
+        This method is typically called *after* `predict()` has been run.
+        It compares the stored `self.predictions` against a set of true
+        labels to calculate simple, high-level metrics (like accuracy).
+
+        This differs from `evaluate()`, which often runs the model's
+        built-in evaluation method on a dataset.
+
+        Args:
+            true_labels (np.ndarray): A 1D array of the true ground-truth
+                labels, corresponding to the stored `self.predictions`.
+
+        Returns:
+            Dict[str, float]: A simple dictionary of one or more
+            assessment metrics, e.g., {'accuracy': 0.95}.
+
+        Raises:
+            ValueError: If `predict()` has not been called yet and
+                `self.predictions` is None.
         """
         pass
 
     @abstractmethod
     def save_model(self, path: str):
-        """Saves the encapsulated model."""
+        """
+        Saves the encapsulated model to a specified path.
+
+        This abstract method must be implemented by subclasses. It is
+        responsible for serializing the *inner* model (e.g., the Keras
+        model or scikit-learn estimator) and saving it to disk in the
+        appropriate format (e.g., HDF5, pickle).
+
+        Args:
+            path (str): The file path (or directory path, depending on
+                the framework) where the model should be saved.
+        """
         pass
 
     @classmethod
     @abstractmethod
     def load_model(cls, path: str) -> 'BaseModelWrapper':
-        """Loads a model from a file."""
+        """
+        Loads a model from a file and wraps it in a new class instance.
+
+        This abstract class method must be implemented by subclasses. It is
+        responsible for deserializing a model from disk and returning a
+        new, fully-functional instance of the *wrapper* class (e.g.,
+        `KerasModelWrapper(loaded_keras_model)`).
+
+        Args:
+            path (str): The file path (or directory path) from which to
+                load the model.
+
+        Returns:
+            BaseModelWrapper: A new instance of the concrete wrapper class
+            (e.g., `KerasModelWrapper`) containing the loaded model.
+        """
         pass
 
     @abstractmethod
@@ -179,6 +304,29 @@ if TENSORFLOW_AVAILABLE:
             gc.collect()
 
         def fit(self, train_data: Any, validation_data: Optional[Any] = None, **kwargs):
+            """
+                        Fits the encapsulated Keras model.
+
+                        This implementation handles three common Keras data formats:
+                        1.  A `tf.data.Dataset` object.
+                        2.  A `tf.keras.utils.Sequence` object (a data generator).
+                        3.  A tuple of `(X, y)` numpy arrays.
+
+                        The resulting `tf.keras.callbacks.History` object is stored
+                        in the `self.history` attribute.
+
+                        Args:
+                            train_data (Any): The training data. Can be a `tf.data.Dataset`,
+                                a `Sequence`, or a tuple of (X, y) numpy arrays.
+                            validation_data (Optional[Any], optional): The validation data.
+                                Format must match `train_data`. Defaults to None.
+                            **kwargs: Additional arguments (e.g., `epochs`, `batch_size`,
+                                `callbacks`) passed directly to the `model.fit()` call.
+
+                        Raises:
+                            TypeError: If `train_data` is not in one of the three
+                                supported formats.
+                        """
             if isinstance(train_data, (tf.data.Dataset, Sequence)):
                 self.history = self.model.fit(train_data, validation_data=validation_data, **kwargs)
             elif isinstance(train_data, tuple) and len(train_data) == 2:
@@ -364,6 +512,34 @@ if TENSORFLOW_AVAILABLE:
                 return 2
 
         def evaluate(self, data: Any, **kwargs) -> Dict[str, Any]:
+            """
+                        Evaluates the encapsulated Keras model on a given dataset.
+
+                        This implementation handles three common Keras data formats:
+                        1.  A `tf.data.Dataset` object.
+                        2.  A `tf.keras.utils.Sequence` object (a data generator).
+                        3.  A tuple of `(X, y)` numpy arrays.
+
+                        It retrieves the metric names from `model.metrics_names` and
+                        zips them with the results from `model.evaluate()` to create
+                        a human-readable dictionary.
+
+                        Args:
+                            data (Any): The data to evaluate on, including features
+                                and true labels. Can be a `tf.data.Dataset`,
+                                a `Sequence`, or a tuple of (X, y) numpy arrays.
+                            **kwargs: Additional arguments passed directly to the
+                                `model.evaluate()` call.
+
+                        Returns:
+                            Dict[str, Any]: A dictionary of metrics, where keys are the
+                            metric names (e.g., 'loss', 'accuracy') and values are the
+                            scalar metric values.
+
+                        Raises:
+                            TypeError: If `data` is not in one of the three
+                                supported formats.
+                        """
             if isinstance(data, (tf.data.Dataset, Sequence)):
                 results = self.model.evaluate(data, **kwargs)
             elif isinstance(data, tuple) and len(data) == 2:
@@ -411,15 +587,35 @@ if SKLEARN_AVAILABLE:
                 verbose: Optional[int] = None,  # Accept but ignore
                 **kwargs):
             """
-            Fit the scikit-learn model and create a mock history for ExperimentRunner compatibility.
+            Fits the encapsulated scikit-learn model and creates a mock history.
+
+            This implementation is designed for compatibility with the
+            Caracal `ExperimentRunner`, which expects an epoch-based history.
+            Since scikit-learn models train in a single call, this method:
+            1.  Fits the model using `model.fit()`.
+            2.  Calculates training accuracy (and validation accuracy if
+                `validation_data` is provided).
+            3.  Creates a **mock history object** containing a single "epoch"
+                with these metrics (e.g., `{'accuracy': [0.95],
+                'val_accuracy': [0.92]}`).
+            4.  Stores this mock history in `self.history`.
 
             Args:
-                train_data: Tuple of (X_train, y_train)
-                validation_data: Optional tuple of (X_val, y_val)
-                epochs: Ignored for sklearn models (Keras compatibility)
-                batch_size: Ignored for sklearn models (Keras compatibility)
-                verbose: Ignored for sklearn models (Keras compatibility)
-                **kwargs: Additional fit parameters passed to sklearn model
+                train_data: The training data, must be a tuple of
+                    `(X_train, y_train)` numpy arrays.
+                validation_data: Optional tuple of `(X_val, y_val)`
+                    numpy arrays. If not provided, validation metrics in the
+                    mock history will be populated as a copy of the
+                    training metrics.
+                epochs: **Ignored.** Accepted for API compatibility with Keras.
+                batch_size: **Ignored.** Accepted for API compatibility.
+                verbose: **Ignored.** Accepted for API compatibility.
+                **kwargs: Additional fit parameters (like `sample_weight`)
+                    that will be passed directly to the scikit-learn
+                    model's `.fit()` method.
+
+            Raises:
+                ValueError: If `train_data` is not a tuple of (X, y).
             """
             if isinstance(train_data, tuple) and len(train_data) == 2:
                 X_train, y_train = train_data
