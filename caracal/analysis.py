@@ -666,7 +666,33 @@ def shapiro_wilk_test(model_metrics: pd.Series, alpha: float = 0.05) -> Statisti
 
 def compare_two_models(model1_results: pd.Series, model2_results: pd.Series,
                        paired: bool = False, alpha: float = 0.05) -> StatisticalTestResult:
-    """Compare two models with intelligent test selection based on data properties."""
+    """
+        Compares two models using intelligent, assumption-driven test selection.
+
+        This function automatically selects the correct statistical test based
+        on the data's properties and whether the samples are paired.
+
+        - If `paired=True`, performs a Wilcoxon signed-rank test on the differences.
+        - If `paired=False`, it performs an "intelligent independent test":
+            1. Checks for normality in both groups (using `check_normality`).
+            2. If both are normal, checks for equal variance (using `check_equal_variances`).
+            3.  - Normal + Equal Variance: Runs a Student's t-test.
+            4.  - Normal + Unequal Variance: Runs a Welch's t-test.
+            5.  - Not Normal: Runs a Mann-Whitney U test.
+
+        Args:
+            model1_results (pd.Series): A Series of metric results for model 1.
+            model2_results (pd.Series): A Series of metric results for model 2.
+            paired (bool, optional): Whether the samples are paired (e.g.,
+                results from the same k-folds). Defaults to False.
+            alpha (float, optional): Significance level used for assumption checks
+                (normality, variance). Defaults to 0.05.
+
+        Returns:
+            StatisticalTestResult: A rich object containing the test name,
+            statistic, p-value, effect size, and details on which
+            assumptions were met.
+        """
 
     # Clean data first
     if paired:
@@ -751,7 +777,51 @@ def compare_two_models(model1_results: pd.Series, model2_results: pd.Series,
 def compare_multiple_models(model_results: Dict[str, pd.Series],
                             alpha: float = 0.05,
                             correction_method: str = 'holm') -> Dict[str, Any]:
-    """Compare multiple models with automatic multiple comparison correction."""
+    """
+    Compares three or more models using a robust, two-step procedure.
+
+    This function is the standard way to compare multiple groups in a
+    statistically sound manner, protecting against inflating the error rate
+    by running too many tests.
+
+    The procedure is:
+    1.  **Omnibus Test:** First, it runs a single "overall" test
+        (Kruskal-Wallis) to see if *any* significant difference exists
+        among all the model groups.
+    2.  **Post-Hoc Tests:** If, and only if, the omnibus test is significant,
+        it then performs pairwise Mann-Whitney U tests for every possible
+        combination of models to find out *which specific pairs* are
+        different.
+    3.  **Correction:** The p-values from all post-hoc tests are automatically
+        corrected using the specified `correction_method` (e.g., 'holm')
+        to control the family-wise error rate.
+
+    Args:
+        model_results (Dict[str, pd.Series]): A dictionary where keys are
+            model names (str) and values are the metric results (pd.Series)
+            for that model.
+        alpha (float, optional): The significance level to use for the tests.
+            Defaults to 0.05.
+        correction_method (str, optional): The method to use for correcting
+            p-values in the post-hoc pairwise comparisons.
+            Options: 'holm', 'bonferroni', 'fdr_bh'. Defaults to 'holm'.
+
+    Returns:
+        Dict[str, Any]: A dictionary containing the complete analysis, with
+        keys:
+            - 'overall_test' (StatisticalTestResult): The result of the
+              Kruskal-Wallis omnibus test.
+            - 'pairwise_comparisons' (Dict[str, StatisticalTestResult]):
+              A dictionary of results for each pair, (e.g., "ModelA_vs_ModelB").
+            - 'significant_comparisons' (List[str]): A list of the names
+              of pairs that were significant after correction.
+            - 'correction_method' (str): The correction method used.
+            - 'message' (str): A message if no pairwise tests were
+              performed (because the overall test was not significant).
+
+    Raises:
+        ValueError: If fewer than two models are provided in `model_results`.
+    """
 
     model_names = list(model_results.keys())
     n_models = len(model_names)
@@ -803,10 +873,8 @@ def compare_multiple_models(model_results: Dict[str, pd.Series],
             test.correction_method = correction_method
 
         results['correction_description'] = correction_description
-        results['significant_comparisons'] = [
-            name for name, test in results['pairwise_comparisons'].items()
-            if test.is_significant(alpha)
-        ]
+        results['significant_comparisons'] = [name for name, test in results['pairwise_comparisons'].items()
+            if test.is_significant(alpha)]
     else:
         results['message'] = "Overall test not significant - no pairwise comparisons performed"
         results['significant_comparisons'] = []
@@ -1034,7 +1102,25 @@ def get_confusion_matrix_df(predictions: np.ndarray, true_labels: np.ndarray,
 # SUMMARY AND REPORTING FUNCTIONS
 
 def generate_statistical_summary(results: List[StatisticalTestResult]) -> str:
-    """Generate a comprehensive summary of multiple statistical test results."""
+    """
+    Generates a human-readable, multi-line string summary of test results.
+
+    This function takes a list of `StatisticalTestResult` objects and formats
+    them into a clean, printable report. The report includes:
+    - An overall summary (total tests, number significant).
+    - A one-line summary for each test (e.g., "Mann-Whitney U: ... p=0.002 *").
+    - The effect size and interpretation for each test.
+    - Any major warnings (e.g., assumption violations) for each test.
+    - A de-duplicated list of key recommendations.
+
+    Args:
+        results (List[StatisticalTestResult]): A list of one or more
+            `StatisticalTestResult` objects to summarize.
+
+    Returns:
+        str: A formatted, multi-line string ready to be printed to the
+        console or saved to a file.
+    """
     if not results:
         return "No statistical test results to summarize."
 
@@ -1080,7 +1166,32 @@ def generate_statistical_summary(results: List[StatisticalTestResult]) -> str:
 
 
 def create_results_dataframe(results: List[StatisticalTestResult]) -> pd.DataFrame:
-    """Create a pandas DataFrame summarizing statistical test results."""
+    """
+    Converts a list of statistical results into a structured pandas DataFrame.
+
+    This function is ideal for programmatic analysis or for exporting results
+    to a file (e.g., a CSV). Each row in the returned DataFrame represents
+    a single test result.
+
+    Args:
+        results (List[StatisticalTestResult]): A list of one or more
+            `StatisticalTestResult` objects.
+
+    Returns:
+        pd.DataFrame: A DataFrame where each row is a test. Key columns
+        include:
+            - 'test_name': The name of the test performed.
+            - 'statistic': The test statistic (e..g, U, H, or F-value).
+            - 'p_value': The original, uncorrected p-value.
+            - 'significant': Boolean (True/False) if the test is significant.
+            - 'effect_size': The calculated effect size.
+            - 'effect_size_interpretation': (e.g., "small", "large").
+            - 'n_warnings': Count of warnings (e.g., assumption violations).
+            - 'assumptions_met': Boolean (True/False) if all assumptions passed.
+            - 'n_group1', 'n_group2', etc.: Sample sizes for each group.
+            - 'corrected_p_value': The p-value after correction (if applied).
+            - 'correction_method': The correction method used (if applied).
+    """
     if not results:
         return pd.DataFrame()
 
@@ -1117,7 +1228,43 @@ def create_results_dataframe(results: List[StatisticalTestResult]) -> pd.DataFra
 
 def assess_training_stability(loss_histories: List[pd.Series],
                               window_size: int = 10) -> Dict[str, Any]:
-    """Assess stability of training across multiple runs."""
+    """
+    Assesses training stability by analyzing loss histories from multiple runs.
+
+    This function calculates a suite of metrics to quantify the consistency
+    and convergence of a model's training process. It truncates all
+    histories to the shortest common length for a fair comparison.
+
+    Args:
+        loss_histories (List[pd.Series]): A list where each item is a
+            pandas Series representing the loss history of a single training run.
+        window_size (int, optional): The number of recent epochs to use for
+            calculating convergence and final window statistics. Defaults to 10.
+
+    Returns:
+        Dict[str, Any]: A dictionary containing key stability metrics:
+            - 'n_runs': Number of training runs analyzed.
+            - 'common_length': The number of epochs used for analysis
+              (based on the shortest run).
+            - 'final_loss_mean': The average loss value at the final epoch
+              across all runs.
+            - 'final_loss_std': The standard deviation of the final epoch loss.
+            - 'final_loss_cv': Coefficient of Variation (Std / Mean) of the
+              final loss. A key stability metric; lower is more stable.
+            - 'final_losses_list': The raw list of all final loss values,
+              used for plotting the true distribution.
+            - 'convergence_rate': The percentage (0.0 to 1.0) of runs that
+              were flagged as "converged" by `check_convergence`.
+            - 'converged_runs': The absolute number of converged runs.
+            - 'stability_assessment': A qualitative judgment ("high",
+              "moderate", "low") based on the final loss CV.
+            - 'between_run_variance': The variance *between* the average
+              loss of each run's final window. High values mean runs
+              ended in different places.
+            - 'within_run_variance_mean': The average variance *within*
+              the final window of each run. High values mean the runs
+              were still oscillating at the end.
+    """
     if not loss_histories or len(loss_histories) < 2:
         return {'error': 'Need at least 2 training histories for stability assessment'}
 
