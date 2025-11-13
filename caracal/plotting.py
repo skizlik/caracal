@@ -598,15 +598,34 @@ def plot_multiple_comparisons(comparison_results: Dict[str, Any],
                               show_effect_sizes: bool = True,
                               show_corrected: bool = True,
                               show: bool = True) -> Figure:
-    """
-    Enhanced visualization of compare_multiple_models results.
 
-    Shows:
-    - Overall test significance with interpretation
-    - Effect sizes with confidence information
-    - Pairwise comparisons with original and corrected p-values
-    - Summary statistics panel
     """
+        Generates a comprehensive multi-panel visualization for comparison results.
+
+        This plot provides a "dashboard" to interpret the output from the
+        `compare_multiple_models` function. It visualizes the main
+        omnibus test, the overall effect size, assumption checks, and a
+        detailed bar chart of all pairwise comparisons.
+
+        Args:
+            comparison_results: The results dictionary returned from
+                `compare_multiple_models`.
+            figsize: The (width, height) in inches for the overall figure.
+            show_effect_sizes: If True, includes the panel for visualizing
+                the overall effect size.
+            show_corrected: This parameter is not currently used, as the plot
+                dynamically shows both original and corrected p-values if available.
+            show: If True, calls `plt.show()` to display the plot immediately.
+                Set to False to return the figure object for further editing.
+
+        Returns:
+            matplotlib.figure.Figure: The Figure object containing the plot,
+            allowing for further customization or saving.
+
+        Raises:
+            ImportError: If `matplotlib` or `seaborn` are not installed.
+        """
+
     _check_matplotlib()
     _check_seaborn()
 
@@ -790,14 +809,40 @@ def plot_pairwise_comparison_matrix(comparison_results: Dict[str, Any],
                                     annotate_significance: bool = True,
                                     show: bool = True) -> Figure:
     """
-    Enhanced matrix visualization of pairwise comparisons with optional effect sizes.
+        Creates a matrix visualization of pairwise comparison results.
 
-    Args:
-        comparison_results: Results from compare_multiple_models()
-        figsize: Figure size
-        show_effect_sizes: If True, show effect sizes in a third heatmap
-        annotate_significance: If True, add significance stars to annotations
-    """
+        This function generates a figure with two or three side-by-side heatmaps
+        to provide a dense, easy-to-read summary of all pairwise comparisons from
+        a `compare_multiple_models` run.
+
+        The plots are:
+        1.  **Corrected P-values:** A heatmap of p-values, colored from green (low p)
+            to red (high p).
+        2.  **Significance:** A binary (green/red) heatmap showing which
+            comparisons are statistically significant (✓) at α=0.05.
+        3.  **Effect Sizes (Optional):** A heatmap showing the (absolute)
+            effect size for each comparison, colored from yellow to red.
+
+        Args:
+            comparison_results: The results dictionary returned from
+                `compare_multiple_models`.
+            figsize: The (width, height) in inches for the overall figure.
+            show_effect_sizes: If True, includes the third heatmap to display
+                pairwise effect sizes.
+            annotate_significance: If True, adds significance stars (*, **, ***)
+                to the p-value heatmap annotations for quick reference.
+            show: If True, calls `plt.show()` to display the plot immediately.
+                Set to False to return the figure object for further editing.
+
+        Returns:
+            matplotlib.figure.Figure: The Figure object containing the plot,
+            allowing for further customization or saving.
+
+        Raises:
+            ImportError: If `matplotlib` or `seaborn` are not installed.
+        """
+
+
     _check_matplotlib()
     _check_seaborn()
 
@@ -932,12 +977,37 @@ def plot_pairwise_comparison_matrix(comparison_results: Dict[str, Any],
 def plot_training_stability(stability_results: Dict[str, Any], figsize: Tuple[int, int] = (12, 8),
                             show: bool = True) -> Figure:
     """
-    Visualize training stability metrics from assess_training_stability().
+        Visualizes training stability metrics from `assess_training_stability`.
 
-    Args:
-        stability_results: Results dictionary from assess_training_stability()
-        figsize: Figure size tuple
-    """
+        This function generates a 2x2 dashboard to summarize the stability of a
+        model's training process across multiple runs. It requires the results
+        dictionary from the `assess_training_stability` function.
+
+        The four panels show:
+        1.  **Top-Left:** A histogram of the *actual* final loss values from each
+            run, showing the distribution of outcomes.
+        2.  **Top-Right:** A text-based summary of the key stability metrics
+            (Mean, Std, CV, Convergence Rate).
+        3.  **Bottom-Left:** A pie chart showing the percentage of runs that
+            met the convergence criteria.
+        4.  **Bottom-Right:** A bar chart indicating the final stability
+            assessment (High, Moderate, or Low).
+
+        Args:
+            stability_results: The results dictionary returned from
+                `assess_training_stability`. Must contain 'final_losses_list',
+                'final_loss_mean', 'final_loss_std', etc.
+            figsize: The (width, height) in inches for the overall figure.
+            show: If True, calls `plt.show()` to display the plot immediately.
+                Set to False to return the figure object for further editing.
+
+        Returns:
+            matplotlib.figure.Figure: The Figure object containing the plot,
+            allowing for further customization or saving.
+
+        Raises:
+            ImportError: If `matplotlib` is not installed.
+        """
     _check_matplotlib()
 
     if 'error' in stability_results:
@@ -1042,7 +1112,34 @@ def plot_autocorr_vs_lag(data: Union[pd.Series, List[float]],
                          max_lag: int = 20,
                          title: str = "Autocorrelation of Loss",
                          show: bool = True) -> Figure:
-    """Plots the autocorrelation of a time series as a function of lag."""
+    """
+        Plots the autocorrelation of a time series as a function of lag.
+
+        This function helps to visualize how "memory" or trends persist in a
+        time series, such as a model's loss history. A high autocorrelation at
+        lag `k` means the value at epoch `t` is strongly correlated with the
+        value at epoch `t-k`.
+
+        The plot shows:
+        - Vertical lines (stems) for the autocorrelation value at each lag.
+        - A horizontal dashed line at 0 (no correlation).
+
+        Args:
+            data: The time series data (e.g., a single run's loss history)
+                as a pandas Series or list.
+            max_lag: The maximum number of lags (epochs back) to calculate
+                the correlation for.
+            title: The title for the plot.
+            show: If True, calls `plt.show()` to display the plot immediately.
+                Set to False to return the figure object for further editing.
+
+        Returns:
+            matplotlib.figure.Figure: The Figure object containing the plot,
+            allowing for further customization or saving.
+
+        Raises:
+            ImportError: If `matplotlib` is not installed.
+        """
     _check_matplotlib()
 
     if not isinstance(data, pd.Series):
@@ -1072,7 +1169,35 @@ def plot_averaged_autocorr(lags: List[float],
                            std_autocorr: List[float],
                            title: str = "Averaged Autocorrelation of Loss",
                            show: bool = True) -> Figure:
-    """Plots the averaged autocorrelation with a shaded region for standard deviation."""
+    """
+    Plots the mean autocorrelation across multiple runs with a standard deviation band.
+
+    This function is used to visualize the *average* autocorrelation behavior
+    from a variability study (i.e., from many loss histories). It helps
+    to identify consistent trends or memory effects in the training process.
+
+    The plot shows:
+    - A central blue line representing the mean autocorrelation at each lag.
+    - A shaded blue area representing one standard deviation above and
+      below the mean, showing the "variability" of the autocorrelation.
+
+    Args:
+        lags: A list of the lag values (e.g., [1, 2, ..., 20]).
+        mean_autocorr: A list of the mean autocorrelation values, one
+            for each lag.
+        std_autocorr: A list of the standard deviation values for the
+            autocorrelation at each lag.
+        title: The title for the plot.
+        show: If True, calls `plt.show()` to display the plot immediately.
+            Set to False to return the figure object for further editing.
+
+    Returns:
+        matplotlib.figure.Figure: The Figure object containing the plot,
+        allowing for further customization or saving.
+
+    Raises:
+        ImportError: If `matplotlib` is not installed.
+    """
     _check_matplotlib()
 
     fig = plt.figure(figsize=(10, 6))
@@ -1098,13 +1223,33 @@ def plot_pacf_vs_lag(data: Union[pd.Series, List[float]],
                      alpha: float = 0.05,
                      show: bool = True) -> Figure:
     """
-    Plots the partial autocorrelation of a time series as a function of lag.
+    Plots the mean autocorrelation across multiple runs with a standard deviation band.
+
+    This function is used to visualize the *average* autocorrelation behavior
+    from a variability study (i.e., from many loss histories). It helps
+    to identify consistent trends or memory effects in the training process.
+
+    The plot shows:
+    - A central blue line representing the mean autocorrelation at each lag.
+    - A shaded blue area representing one standard deviation above and
+      below the mean, showing the "variability" of the autocorrelation.
 
     Args:
-        data: Time series data (e.g., loss history)
-        max_lag: Maximum lag to compute PACF for
-        title: Plot title
-        alpha: Significance level for confidence intervals
+        lags: A list of the lag values (e.g., [1, 2, ..., 20]).
+        mean_autocorr: A list of the mean autocorrelation values, one
+            for each lag.
+        std_autocorr: A list of the standard deviation values for the
+            autocorrelation at each lag.
+        title: The title for the plot.
+        show: If True, calls `plt.show()` to display the plot immediately.
+            Set to False to return the figure object for further editing.
+
+    Returns:
+        matplotlib.figure.Figure: The Figure object containing the plot,
+        allowing for further customization or saving.
+
+    Raises:
+        ImportError: If `matplotlib` is not installed.
     """
     _check_matplotlib()
 
@@ -1159,15 +1304,39 @@ def plot_averaged_pacf(lags: List[float],
                        conf_level: float = 0.95,
                        show: bool = True) -> Figure:
     """
-    Plots the averaged partial autocorrelation with confidence bands.
+        Plots the mean partial autocorrelation (PACF) across multiple runs.
 
-    Args:
-        lags: List of lag values
-        mean_pacf: Mean PACF values across runs
-        std_pacf: Standard deviation of PACF values
-        title: Plot title
-        conf_level: Confidence level for bands
-    """
+        This function averages the PACF plots from many runs to show the
+        typical *direct* autoregressive behavior of the training process,
+        independent of shorter-lag effects.
+
+        The plot shows:
+        - A central blue line for the mean PACF value at each lag.
+        - A shaded blue area representing one standard deviation, showing
+          the *variability* of the PACF values across runs.
+        - Dashed gray lines representing the statistical significance
+          (e.g., 95% confidence) bounds for white noise. Lags where the
+          mean line extends past these bounds may indicate a significant
+          autoregressive component.
+
+        Args:
+            lags: A list of the lag values (e.g., [1, 2, ..., 20]).
+            mean_pacf: A list of the mean PACF values, one for each lag.
+            std_pacf: A list of the standard deviation of the PACF values
+                at each lag.
+            title: The title for the plot.
+            conf_level: The confidence level for the white noise significance
+                bounds. Default is 0.95.
+            show: If True, calls `plt.show()` to display the plot immediately.
+                Set to False to return the figure object for further editing.
+
+        Returns:
+            matplotlib.figure.Figure: The Figure object containing the plot,
+            allowing for further customization or saving.
+
+        Raises:
+            ImportError: If `matplotlib` is not installed.
+        """
     _check_matplotlib()
 
     fig = plt.figure(figsize=(10, 6))

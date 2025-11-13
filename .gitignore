@@ -40,6 +40,7 @@ build/
 _dev/
 codebase.py
 make_codebase.sh
+cudalist.sh
 
 # Package management (keeping requirements.txt as primary)
 poetry.lock
