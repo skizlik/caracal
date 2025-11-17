@@ -518,6 +518,45 @@ class VariabilityStudyResults:
                 metrics[f'run_{i + 1}'] = float(df[metric_name].iloc[-1])
         return metrics
 
+    def get_available_metrics(self) -> List[str]:
+        """Get list of all available metrics across all runs."""
+        if not self.all_runs_metrics:
+            return []
+
+        # Get all unique column names from all DataFrames
+        all_columns = set()
+        for df in self.all_runs_metrics:
+            all_columns.update(df.columns)
+
+        # Exclude non-metric columns
+        exclude = {'run_num', 'epoch', 'run_id'}
+        metrics = sorted([col for col in all_columns if col not in exclude])
+
+        return metrics
+
+    def to_dataframe(self) -> pd.DataFrame:
+        """Convert results to a summary DataFrame with one row per run."""
+        if not self.all_runs_metrics:
+            return pd.DataFrame()
+
+        rows = []
+        for i, df in enumerate(self.all_runs_metrics):
+            row = {'run_id': i + 1}
+
+            # Get final values for all metrics
+            for col in df.columns:
+                if col not in {'run_num', 'epoch', 'run_id'}:
+                    row[f'final_{col}'] = float(df[col].iloc[-1])
+
+            # Add test metrics if available
+            if i < len(self.final_test_metrics):
+                for key, value in self.final_test_metrics[i].items():
+                    row[f'test_{key}'] = value
+
+            rows.append(row)
+
+        return pd.DataFrame(rows)
+    
     def summarize(self) -> str:
         """Generate text summary of results."""
         lines = [
