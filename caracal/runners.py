@@ -578,6 +578,77 @@ class VariabilityStudyResults:
 
         return "\n".join(lines)
 
+    def compare_models_statistically(self,
+                                     metric_name: str = 'val_accuracy',
+                                     alpha: float = 0.05,
+                                     correction_method: str = 'holm') -> Dict[str, Any]:
+        """
+        Perform statistical comparison of runs for the specified metric.
+
+        This treats each run as a separate "model" and performs pairwise
+        statistical comparisons to assess variability between runs.
+
+        Args:
+            metric_name: Name of metric to compare (e.g., 'val_accuracy', 'val_loss')
+            alpha: Significance level for statistical tests
+            correction_method: Multiple comparison correction method
+                              ('holm', 'bonferroni', 'fdr_bh')
+
+        Returns:
+            Dictionary containing statistical comparison results with keys:
+            - 'overall_test': Overall statistical test result
+            - 'pairwise_comparisons': Dict of pairwise comparison results
+            - 'correction_method': The correction method used
+            - 'significant_comparisons': List of significant comparison names
+
+        Examples:
+            >>> results = run_variability_study(...)
+            >>> comparison = results.compare_models_statistically('val_accuracy')
+            >>> print(comparison['overall_test'].conclusion)
+        """
+        from .analysis import compare_multiple_models
+
+        if not self.all_runs_metrics:
+            raise ValueError("No run metrics available for statistical comparison")
+
+        # Extract the specified metric for each run
+        final_metrics = self.get_final_metrics(metric_name)
+
+        if not final_metrics:
+            available = self.get_available_metrics()
+            raise ValueError(
+                f"Metric '{metric_name}' not found in results. "
+                f"Available metrics: {available}"
+            )
+
+        # Convert to the format expected by compare_multiple_models
+        # (Dict[str, pd.Series])
+        metrics_dict = {}
+        for run_name, value in final_metrics.items():
+            # Create a Series with single value for each run
+            # Use all values from that run's history for the metric if available
+            run_idx = int(run_name.split('_')[-1]) - 1  # Extract run number
+
+            if run_idx < len(self.all_runs_metrics):
+                df = self.all_runs_metrics[run_idx]
+                if metric_name in df.columns:
+                    # Use all epoch values for this run
+                    metrics_dict[run_name] = df[metric_name]
+                else:
+                    # Fallback: create single-value series
+                    metrics_dict[run_name] = pd.Series([value], name=run_name)
+            else:
+                # Fallback: create single-value series
+                metrics_dict[run_name] = pd.Series([value], name=run_name)
+
+        # Perform statistical comparison
+        comparison_results = compare_multiple_models(
+            model_results=metrics_dict,
+            alpha=alpha,
+            correction_method=correction_method
+        )
+
+        return comparison_results
 
 # Convenience function
 def run_variability_study(
