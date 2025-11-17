@@ -400,7 +400,7 @@ class ExperimentRunner:
             if self.final_val_accuracies:
                 mean_acc = np.mean(self.final_val_accuracies)
                 std_acc = np.std(self.final_val_accuracies)
-                print(f"  Val accuracy: {mean_acc:.4f} ± {std_acc:.4f}")
+                print(f"  Val accuracy: {mean_acc:.4f} (SD = {std_acc:.4f})")
 
         return self.all_runs_metrics, self.final_val_accuracies, self.final_test_metrics
 
