@@ -250,7 +250,7 @@ def plot_roc_curve(model_wrapper: 'BaseModelWrapper', X_test: np.ndarray, y_test
     _check_tensorflow_utils()
 
     if not hasattr(model_wrapper, 'predict_proba'):
-        print("Model does not have a predict_proba method. Cannot plot ROC curve.") Figure
+        print("Model does not have a predict_proba method. Cannot plot ROC curve.")
         return
 
     y_score = model_wrapper.predict_proba(X_test)

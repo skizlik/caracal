@@ -201,10 +201,13 @@ try:
         plot_roc_curve,
         plot_precision_recall_curve,
         plot_averaged_autocorr,
-        plot_variability_roc_curves,
-        plot_variability_pr_curves,
         plot_variability_summary,
-        plot_autocorr_vs_lag
+        plot_autocorr_vs_lag,
+        plot_pacf_vs_lag,
+        plot_averaged_pacf,
+        plot_multiple_comparisons,
+        plot_pairwise_comparison_matrix,
+        plot_training_stability
     )
 
     __all__.extend([
@@ -213,14 +216,19 @@ try:
         'plot_roc_curve',
         'plot_precision_recall_curve',
         'plot_averaged_autocorr',
-        'plot_variability_roc_curves',
-        'plot_variability_pr_curves',
         'plot_variability_summary',
-        'plot_autocorr_vs_lag'
+        'plot_autocorr_vs_lag',
+        'plot_pacf_vs_lag',
+        'plot_averaged_pacf',
+        'plot_multiple_comparisons',
+        'plot_pairwise_comparison_matrix',
+        'plot_training_stability'
     ])
     _has_plotting_functions = True
-except ImportError:
+except ImportError as e:
     _has_plotting_functions = False
+    if os.getenv('DEBUG'):
+        print(f"Plotting functions not available: {e}")
 
 # MLflow logger and utilities
 try:

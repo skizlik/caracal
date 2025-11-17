@@ -582,39 +582,58 @@ def kruskal_wallis_test(model_metrics: Dict[str, pd.Series],
         raise ValueError(
             "Insufficient data after cleaning. Kruskal-Wallis test requires at least two non-empty groups.")
 
+    # Create result object early for error handling
+    result = StatisticalTestResult(test_name="Kruskal-Wallis H-Test")
+
+    # Store sample sizes
+    result.sample_sizes = {name: len(group) for name, group in zip(group_names, clean_groups)}
+
     # Validation
     adequate_size, size_warnings = validate_sample_sizes(clean_groups, 3, "Kruskal-Wallis test")
+    result.warnings.extend(size_warnings)
+    result.assumptions_met['adequate_sample_size'] = adequate_size
 
     try:
+        # Perform Kruskal-Wallis test
         statistic, p_value = kruskal(*clean_groups)
 
-        # Create the result object after computing statistic and p_value
-        result = StatisticalTestResult(
-            test_name="Kruskal-Wallis H-Test",
-            statistic=float(statistic),
-            p_value=float(p_value)
-        )
-    ...
-    result.effect_size = epsilon_sq
-    result.effect_size_name = "epsilon-squared"
-    result.effect_size_interpretation = _interpret_eta_squared(epsilon_sq)  # Similar interpretation
+        result.statistic = float(statistic)
+        result.p_value = float(p_value)
+
+        # Calculate effect size (epsilon-squared, analogous to eta-squared)
+        # epsilon² = (H - k + 1) / (n - k)
+        # where H = test statistic, k = number of groups, n = total sample size
+        k = len(clean_groups)
+        n = sum(len(group) for group in clean_groups)
+
+        if n > k:
+            epsilon_sq = (statistic - k + 1) / (n - k)
+            # Bound between 0 and 1
+            epsilon_sq = max(0.0, min(1.0, epsilon_sq))
+        else:
+            epsilon_sq = 0.0
+
+        result.effect_size = epsilon_sq
+        result.effect_size_name = "epsilon-squared"
+        result.effect_size_interpretation = _interpret_eta_squared(epsilon_sq)  # Similar interpretation
 
     except Exception as e:
-        # Create a result object even on failure for consistent return type
-        result = StatisticalTestResult(
-            test_name="Kruskal-Wallis H-Test",
-            statistic=float('nan'),
-            p_value=float('nan')
-        )
+        # Handle test failure gracefully
         result.warnings.append(f"Kruskal-Wallis test failed: {str(e)}")
+        result.statistic = float('nan')
+        result.p_value = float('nan')
+        result.effect_size = None
         return result
 
     # Generate interpretation
     result.conclusion = _generate_kruskal_wallis_conclusion(result, alpha)
     result.detailed_interpretation = _generate_detailed_interpretation(result, alpha)
 
-    return result
+    # Add recommendations
+    if not adequate_size:
+        result.recommendations.append("Collect more data for more reliable results")
 
+    return result
 
 def shapiro_wilk_test(model_metrics: pd.Series, alpha: float = 0.05) -> StatisticalTestResult:
     """Shapiro-Wilk test for normality with comprehensive validation."""
