@@ -32,25 +32,49 @@ def test_all_exports():
         print(f"✓ All {len(caracal.__all__)} exports verified")
         return True
 
+
 def test_common_imports():
     """Test common import patterns."""
-    tests = [
+    import caracal
+
+    # Required imports (must always work)
+    required = [
         ("ModelConfig", "from caracal import ModelConfig"),
-        ("KerasModelWrapper", "from caracal import KerasModelWrapper"),
         ("plot_variability_summary", "from caracal import plot_variability_summary"),
         ("compare_two_models", "from caracal import compare_two_models"),
     ]
-    
+
+    # Optional imports (depend on optional dependencies)
+    optional = [
+        ("KerasModelWrapper", "from caracal import KerasModelWrapper", caracal.TENSORFLOW_AVAILABLE),
+    ]
+
     success = 0
-    for name, import_stmt in tests:
+    total = len(required)
+
+    # Test required imports
+    for name, import_stmt in required:
         try:
             exec(import_stmt)
             print(f"✓ {name}")
             success += 1
         except ImportError as e:
             print(f"✗ {name}: {e}")
-    
-    return success == len(tests)
+
+    # Test optional imports
+    for name, import_stmt, available in optional:
+        if available:
+            total += 1
+            try:
+                exec(import_stmt)
+                print(f"✓ {name}")
+                success += 1
+            except ImportError as e:
+                print(f"✗ {name}: {e}")
+        else:
+            print(f"⊘ {name} (skipped - optional dependency not installed)")
+
+    return success == total
 
 def main():
     print("=" * 60)
