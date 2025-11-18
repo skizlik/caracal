@@ -1,0 +1,23 @@
+name: Tests
+
+# When to run: every push and pull request
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest   # GitHub provides a free Linux VM
+    
+    steps:
+      # 1. Get your code
+      - uses: actions/checkout@v3
+      
+      # 2. Install Python
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      
+      # 3. Install your package
+      - run: pip install -e .
+      
+      # 4. Run your validation script
+      - run: python scripts/validate_imports.py
