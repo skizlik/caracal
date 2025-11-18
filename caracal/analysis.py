@@ -643,7 +643,7 @@ def kruskal_wallis_test(model_metrics: Dict[str, pd.Series],
         result.effect_size_name = "epsilon-squared"
         result.effect_size_interpretation = _interpret_eta_squared(epsilon_sq)
 
-    except Exception as e
+    except Exception as e:
         # Create a failure result object for consistent return type
         result = StatisticalTestResult(
             test_name="Kruskal-Wallis H-Test",
