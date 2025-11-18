@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "caracal"
-version = "0.0.2"
+version = "0.0.3"
 description = "Caracal: Computational Analysis of Run And Convergence Algorithms Library"
 authors = ["Stephen Kizlik <stephen.kizlik@gmail.com>"]
 license = "MIT"

@@ -635,7 +635,7 @@ def kruskal_wallis_test(model_metrics: Dict[str, pd.Series],
 
         if N > k:
             epsilon_sq = (statistic - k + 1) / (N - k)
-            epsilon_sq = max(0, epsilon_sq)  # Ensure non-negative
+            epsilon_sq = max(0.0, min(1.0, epsilon_sq))   # Ensure non-negative
         else:
             epsilon_sq = 0
 

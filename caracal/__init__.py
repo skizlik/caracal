@@ -1,5 +1,5 @@
 # caracal/__init__.py
-# v.0.0.2
+# v.0.0.3
 
 """
 Caracal: A Machine Learning Framework for Variability and Reproducibility Analysis
@@ -34,6 +34,15 @@ from .loggers import BaseLogger
 # Experiment runners (always available)
 from .runners import ExperimentRunner, run_variability_study, VariabilityStudyResults
 
+# Memory management
+from .memory import (
+    MemoryManager,
+    managed_memory,
+    get_memory_manager,
+    cleanup_gpu_memory,
+    get_memory_info
+)
+
 # Build __all__ list with core functionality
 __all__ = [
     # Core classes
@@ -43,8 +52,6 @@ __all__ = [
 
     # Data handling
     'DataHandler',
-    'get_data_handler_by_type',
-    'analyze_dataset_structure',
 
     # Experiment running
     'ExperimentRunner',
@@ -66,7 +73,10 @@ __all__ = [
 
     # Memory cleanup
     'MemoryManager',
-    'managed_memory_context',
+    'managed_memory',
+    'get_memory_manager',
+    'cleanup_gpu_memory',
+    'get_memory_info',
 
     # Feature availability flags
     'TENSORFLOW_AVAILABLE',
@@ -269,7 +279,7 @@ except ImportError:
     _has_explainability = False
 
 # Library version
-__version__ = "0.0.2"
+__version__ = "0.0.3"
 
 
 # Enhanced feature availability summary
