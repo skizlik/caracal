@@ -754,11 +754,13 @@ def compare_two_models(model1_results: pd.Series, model2_results: pd.Series,
 
     # Check sample sizes
     if len(clean1) < 6 or len(clean2) < 6:
-        result = StatisticalTestResult(test_name="Insufficient Data")
+        result = StatisticalTestResult(
+            test_name="Insufficient Data",
+            statistic=float('nan'),  # Required argument
+            p_value=float('nan')  # Required argument
+        )
         result.warnings.append("Insufficient data for reliable statistical testing")
         result.recommendations.append("Collect more data (at least 6 samples per group)")
-        result.statistic = float('nan')
-        result.p_value = float('nan')
         return result
 
     if paired:
@@ -1345,7 +1347,22 @@ def assess_training_stability(loss_histories: List[pd.Series],
     # Convergence assessment for each run
     convergence_results = []
     for i, history in enumerate(truncated_histories):
-        converged = check_convergence(pd.Series(history), window_size=window_size)
+        # Handle both Series and DataFrame inputs
+        if isinstance(history, pd.DataFrame):
+            # For DataFrames, use the loss column for convergence check
+            if 'loss' in history.columns:
+                converged = check_convergence(history['loss'], window_size=window_size)
+            elif 'val_loss' in history.columns:
+                converged = check_convergence(history['val_loss'], window_size=window_size)
+            else:
+                # No loss column found, can't check convergence
+                converged = False
+        elif isinstance(history, pd.Series):
+            # Already a Series, use directly
+            converged = check_convergence(history, window_size=window_size)
+        else:
+            # Unknown type, assume not converged
+            converged = False
         convergence_results.append(converged)
 
     results['convergence_rate'] = sum(convergence_results) / len(convergence_results)

@@ -48,6 +48,11 @@ RUN pip --default-timeout=120 install \
     pillow \
     joblib
 
+# Install pytest
+RUN pip --default-timeout=120 install \
+    pytest \
+    pytest-cov
+
 # Install other dependencies
 RUN pip --default-timeout=120 install \
     hyperopt \
