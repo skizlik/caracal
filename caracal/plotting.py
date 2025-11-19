@@ -712,10 +712,16 @@ def plot_multiple_comparisons(comparison_results: Dict[str, Any],
     if 'pairwise_comparisons' in comparison_results:
         n_comparisons = len(comparison_results['pairwise_comparisons'])
         n_significant = len(comparison_results.get('significant_comparisons', []))
+        # Calculate percentage outside the f-string
+        if n_comparisons > 0:
+            pct = f"{n_significant / n_comparisons * 100:.1f}%"
+        else:
+            pct = "N/A"
+
         summary_lines.extend([
             f"Pairwise Comparisons:",
             f"  Total: {n_comparisons}",
-            f"  Significant: {n_significant} ({n_significant / n_comparisons * 100:.1f}%)",
+            f"  Significant: {n_significant} ({pct})",
             f"  Correction: {comparison_results.get('correction_method', 'none')}"
         ])
 
@@ -1153,7 +1159,7 @@ def plot_autocorr_vs_lag(data: Union[pd.Series, List[float]],
     lags = range(1, max_lag + 1)
 
     fig = plt.figure(figsize=(10, 6))
-    plt.stem(lags, autocorr_values, use_line_collection=True)
+    plt.stem(lags, autocorr_values)
     plt.title(title)
     plt.xlabel("Lag")
     plt.ylabel("Autocorrelation")

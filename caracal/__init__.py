@@ -1,5 +1,5 @@
 # caracal/__init__.py
-# v.0.0.3
+# v.0.0.4
 
 """
 Caracal: A Machine Learning Framework for Variability and Reproducibility Analysis
@@ -7,7 +7,6 @@ Caracal: A Machine Learning Framework for Variability and Reproducibility Analys
 Caracal provides tools for conducting systematic variability studies, statistical analysis
 of model performance, experiment tracking, and comprehensive ML workflow management.
 """
-
 # Core imports (always available)
 from .config import ModelConfig
 from .core import BaseModelWrapper, TENSORFLOW_AVAILABLE, SKLEARN_AVAILABLE
