@@ -279,7 +279,7 @@ except ImportError:
     _has_explainability = False
 
 # Library version
-__version__ = "0.0.3"
+__version__ = "0.0.4"
 
 
 # Enhanced feature availability summary
