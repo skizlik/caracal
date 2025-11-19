@@ -352,8 +352,12 @@ def mann_whitney_test(model1_metrics: pd.Series, model2_metrics: pd.Series,
     """Mann-Whitney U test with comprehensive validation, effect sizes, and interpretation."""
     _check_scipy()
 
-    result = StatisticalTestResult(test_name="Mann-Whitney U Test")
-
+    result = StatisticalTestResult(
+        test_name="Mann-Whitney U Test",
+        statistic=float('nan'),
+        p_value=float('nan')
+    )
+    
     # Validate inputs
     if not isinstance(model1_metrics, pd.Series) or not isinstance(model2_metrics, pd.Series):
         raise TypeError("Inputs must be pandas Series.")
@@ -382,8 +386,11 @@ def mann_whitney_test(model1_metrics: pd.Series, model2_metrics: pd.Series,
     # Perform test
     try:
         statistic, p_value = mannwhitneyu(clean1, clean2, alternative=alternative)
-        result.statistic = float(statistic)
-        result.p_value = float(p_value)
+        result = StatisticalTestResult(
+            test_name="Mann-Whitney U Test",
+            statistic=float(statistic),
+            p_value=float(p_value)
+        )
 
         # Effect size
         r, r_interpretation = rank_biserial_correlation(clean1, clean2)
@@ -416,7 +423,11 @@ def wilcoxon_signed_rank_test(model_metrics: pd.Series, null_value: float = 0.5,
     """Wilcoxon signed-rank test with comprehensive validation and effect sizes."""
     _check_scipy()
 
-    result = StatisticalTestResult(test_name="Wilcoxon Signed-Rank Test")
+    result = StatisticalTestResult(
+        test_name="Wilcoxon Signed-Rank Test",
+        statistic=float('nan'),
+        p_value=float('nan')
+    )
 
     if not isinstance(model_metrics, pd.Series):
         raise TypeError("Input must be a pandas Series.")
@@ -452,8 +463,11 @@ def wilcoxon_signed_rank_test(model_metrics: pd.Series, null_value: float = 0.5,
             raise ValueError("Insufficient non-zero differences for Wilcoxon test")
 
         statistic, p_value = wilcoxon(non_zero_data, alternative=alternative)
-        result.statistic = float(statistic)
-        result.p_value = float(p_value)
+        result = StatisticalTestResult(
+            test_name="Wilcoxon Signed-Rank Test",
+            statistic=float(statistic),
+            p_value=float(p_value)
+        )
 
         # Effect size (r = Z / sqrt(N))
         n = len(non_zero_data)
