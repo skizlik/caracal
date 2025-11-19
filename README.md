@@ -1,302 +1,251 @@
-# Caracal v0.0.2
+# Caracal
 
-**Computational Analysis of Run And Convergence Algorithms Library**
+[![Tests](https://github.com/skizlik/caracal/workflows/Tests/badge.svg)](https://github.com/skizlik/caracal/actions)
+[![Coverage](https://img.shields.io/badge/coverage-31%25-yellow)](https://github.com/skizlik/caracal)
+[![Python](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/downloads/)
+[![Version](https://img.shields.io/badge/version-0.0.4-blue)](https://github.com/skizlik/caracal/releases)
+[![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/skizlik/caracal/blob/main/LICENSE)
 
-*A Python library for rigorous analysis of machine learning model variability and performance stability.*
+**Caracal** (Comparison And Reproducibility Analysis for Computational Algorithmic Learning) is a Python library for analyzing variability, reproducibility, and stability in machine learning models.
 
----
+## 🎯 The Problem Caracal Solves
 
-## Overview
+Your model achieves 95% accuracy. But is it *really* reliable?
+```python
+# Without Caracal: Deploy and hope for the best
+model.fit(X_train, y_train)
+print(f"Accuracy: {model.score(X_test, y_test):.2%}")  # 95% - ship it!
 
-Machine learning practitioners commonly train a model once and report its performance. However, stochastic training processes can produce significantly different outcomes across identical runs. **Caracal** provides tools to quantify and analyze this variability, helping researchers and practitioners understand model reliability and make more informed decisions.
+# With Caracal: Know your model's true reliability
+results = cr.run_variability_study(model_builder, data_handler, config, num_runs=10)
+stability = cr.assess_training_stability(results.all_runs_metrics)
+print(f"Accuracy: {results.mean_accuracy:.2%} ± {results.std_accuracy:.2%}")  # 95% ± 8% 😱
+print(f"Stability: {stability['stability_assessment']}")  # "LOW" - don't ship!
+```
 
-## What's New in v0.0.2
+## ✨ Key Features
 
-**Major Reliability Improvements**
-- **Fixed GPU memory management** - Completely refactored memory system for reliable repeated training
-- **Eliminated memory leaks** - GPU-intensive models can now run 50+ training iterations without errors
-- **Clean output** - Removed parameter spam and verbose logging for better user experience
-- **Professional GPU handling** - Proper TensorFlow configuration and cleanup between runs
+### 🔬 **Statistical Rigor**
+- **Publication-ready statistical tests** with effect sizes and assumption checking
+- Mann-Whitney U, Wilcoxon signed-rank, ANOVA, Kruskal-Wallis tests
+- Multiple comparison corrections (Holm, Bonferroni, FDR)
+- Automatic assumption validation with recommendations
 
-v0.0.2 represents a major step forward in stability, enabling real-world variability studies on large models.
+### 📊 **Variability Analysis**
+- Run multiple training iterations to measure model stability
+- Detect initialization-dependent performance variations
+- Identify convergence issues and training instabilities
+- Assess reproducibility across different random seeds
 
-## What Works Now
+### 🧹 **Memory Management**
+- **Automatic GPU memory cleanup** prevents OOM errors
+- Optional process isolation for guaranteed cleanup
+- Memory monitoring and reporting
+- Smart resource management for long-running experiments
 
-- **Variability Studies**: Run identical models multiple times and analyze performance distributions
-- **Statistical Analysis**: Compare model performance with effect sizes and significance tests  
-- **Reliable GPU Training**: Handle large CNNs and repeated training runs without memory issues
-- **Model Wrappers**: Support for Keras/TensorFlow and scikit-learn models
-- **Multiple Data Handlers**: Tabular, Image, Text, and Time Series data support
-- **Enhanced Memory Management**: Automatic cleanup with deep GPU cleaning for intensive workloads
-- **Visualization**: Training curves, performance distributions, and statistical plots
-- **Statistical Integration**: Comprehensive analysis methods with effect sizes
+### 📈 **Comprehensive Visualization**
+- Training history plots with confidence bands
+- Statistical comparison matrices
+- Stability assessment dashboards
+- Distribution plots for final metrics
 
-## Installation
+## 🚀 Quick Start
 
+### Installation
 ```bash
+# Basic installation
+pip install caracal
+
+# With all optional dependencies
+pip install caracal[all]
+
+# Development installation
 git clone https://github.com/skizlik/caracal.git
 cd caracal
 pip install -e .
 ```
 
-### Essential Dependencies
-
-```bash
-# Core functionality
-pip install pandas numpy scikit-learn
-
-# For neural networks and GPU support
-pip install tensorflow
-
-# For statistical analysis and plotting
-pip install scipy matplotlib seaborn
-```
-
-## Quick Start Example
-
-Here's a complete working example for a tabular dataset:
-
+### Basic Usage
 ```python
-import pandas as pd
-import numpy as np
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.datasets import make_classification
-
 import caracal as cr
-from caracal import ModelConfig
-from caracal.data import TabularDataHandler
-from caracal.core import ScikitLearnModelWrapper
+from caracal import ModelConfig, run_variability_study
 
-# Create sample dataset
-X, y = make_classification(n_samples=1000, n_features=20, n_classes=2, random_state=42)
-data = pd.DataFrame(X, columns=[f'feature_{i}' for i in range(20)])
-data['target'] = y
-data.to_csv('sample_data.csv', index=False)
-
-# Define model builder function
-def create_rf_model(config):
-    model = RandomForestClassifier(
-        n_estimators=config.get('n_estimators', 100),
-        max_depth=config.get('max_depth', 10),
-        random_state=config.get('random_state', 42)
-    )
-    return ScikitLearnModelWrapper(model, model_id="random_forest")
-
-# Set up data handler and configuration
-data_handler = TabularDataHandler('sample_data.csv', target_column='target')
+# 1. Define your model configuration
 config = ModelConfig({
-    'n_estimators': 100,
-    'max_depth': 10,
-    'random_state': 42
+    'epochs': 20,
+    'batch_size': 32,
+    'learning_rate': 0.001
 })
 
-# Run variability study
-results = cr.run_variability_study(
-    model_builder=create_rf_model,
+# 2. Create a model builder function
+def create_model(config):
+    model = build_your_model()  # Your model creation logic
+    return cr.KerasModelWrapper(model)
+
+# 3. Set up your data
+data_handler = cr.TabularDataHandler('data.csv', target_column='label')
+
+# 4. Run variability study
+results = run_variability_study(
+    model_builder=create_model,
     data_handler=data_handler,
     model_config=config,
-    num_runs=5
+    num_runs=10
 )
 
-# Analyze results
+# 5. Analyze results
 print(results.summarize())
 
-# Get statistical comparison
-final_accuracies = results.get_final_metrics('val_accuracy')
-print(f"Final validation accuracies: {final_accuracies}")
-```
-
-## GPU Memory Management
-
-For GPU-intensive workloads (large CNNs, many training runs):
-
-```python
-from caracal.memory import set_tensorflow_env_vars, setup_tensorflow_gpu, managed_memory_context
-
-# Configure GPU before importing TensorFlow
-set_tensorflow_env_vars()
-
-# Set up GPU memory management  
-setup_tensorflow_gpu(memory_limit_mb=4096)  # Optional memory limit
-
-# Use deep cleanup for intensive workloads
-with managed_memory_context(deep_clean=True):
-    results = cr.run_variability_study(
-        model_builder=create_cnn_model,
-        data_handler=image_data_handler,
-        model_config=config,
-        num_runs=50  # Now reliable for large studies
-    )
-```
-
-## CNN Example
-
-For image classification with convolutional neural networks:
-
-```python
-import tensorflow as tf
-from caracal import ModelConfig
-from caracal.data import ImageDataHandler
-from caracal.core import KerasModelWrapper
-from caracal.memory import managed_memory_context
-
-def create_cnn_model(config):
-    model = tf.keras.Sequential([
-        tf.keras.layers.Conv2D(32, 3, activation='relu', 
-                              input_shape=config['input_shape']),
-        tf.keras.layers.MaxPooling2D(),
-        tf.keras.layers.Conv2D(64, 3, activation='relu'),
-        tf.keras.layers.MaxPooling2D(),
-        tf.keras.layers.Flatten(),
-        tf.keras.layers.Dense(64, activation='relu'),
-        tf.keras.layers.Dense(config['num_classes'], activation='softmax')
-    ])
-    
-    model.compile(
-        optimizer=tf.keras.optimizers.Adam(config['learning_rate']),
-        loss='sparse_categorical_crossentropy',
-        metrics=['accuracy']
-    )
-    
-    return KerasModelWrapper(model, model_id="cnn")
-
-# Set up for image data (assumes image_dataset/ directory structure)
-image_handler = ImageDataHandler('image_dataset/', image_size=(128, 128))
-cnn_config = ModelConfig.for_cnn(input_shape=(128, 128, 3), num_classes=10)
-
-# Run with proper memory management
-with managed_memory_context(deep_clean=True):
-    results = cr.run_variability_study(
-        model_builder=create_cnn_model,
-        data_handler=image_handler,
-        model_config=cnn_config,
-        num_runs=10
-    )
-```
-
-## Architecture
-
-### Core Components
-
-- **ModelConfig**: Parameter management with validation and smart defaults
-- **BaseModelWrapper**: Unified interface for different ML frameworks
-- **ExperimentRunner**: Orchestrates variability studies with memory management
-- **VariabilityStudyResults**: Enhanced results container with analysis methods
-- **MemoryManager**: GPU-focused memory management for reliable repeated training
-
-### Framework Support
-
-- **Keras/TensorFlow**: Full support with epoch-by-epoch metrics and GPU memory management
-- **scikit-learn**: Adapted support with run-based variability analysis
-- **Statistical Analysis**: Integration with scipy-based hypothesis tests and effect sizes
-
-### Data Handlers
-
-- **TabularDataHandler**: CSV files with train/val/test splitting
-- **ImageDataHandler**: Directory-based image datasets with TensorFlow integration
-- **TextDataHandler**: Text classification with tokenization and padding
-- **TimeSeriesDataHandler**: Time series with sequence generation
-
-## Memory Management Features
-
-Caracal includes sophisticated memory management designed for ML workloads:
-
-- **Automatic cleanup** between training runs
-- **GPU memory optimization** for TensorFlow models
-- **Deep cleaning** for intensive workloads (50+ training runs)
-- **Environment variable configuration** for common GPU issues
-- **Memory usage monitoring** and reporting
-
-## GPU and Docker Support
-
-### Docker with GPU Support
-```bash
-./build-gpu.sh    # Build container with CUDA support
-./run-gpu.sh      # Launch with GPU access
-```
-
-### Manual GPU Configuration
-```python
-# Set environment variables before importing TensorFlow
-from caracal.memory import set_tensorflow_env_vars
-set_tensorflow_env_vars()
-
-# Configure GPU memory growth
-from caracal.memory import setup_tensorflow_gpu  
-setup_tensorflow_gpu()
-```
-
-## Statistical Analysis
-
-Compare model performance with proper statistical methods:
-
-```python
-# Statistical comparison of multiple runs
+# 6. Statistical comparison
 comparison = results.compare_models_statistically('val_accuracy')
-print(comparison['overall_test'].conclusion)
+print(f"Runs are statistically different: {comparison['overall_test'].is_significant()}")
 
-# Compare multiple algorithms
-algorithms = ['random_forest', 'svm', 'neural_net']
-all_results = {}
-
-for alg in algorithms:
-    results = cr.run_variability_study(
-        model_builder=lambda config: create_model(alg, config),
-        data_handler=data_handler,
-        model_config=config,
-        num_runs=10
-    )
-    all_results[alg] = results.get_final_metrics('val_accuracy')
-
-# Statistical comparison across algorithms
-from caracal.analysis import compare_multiple_models
-comparison = compare_multiple_models(all_results)
+# 7. Visualize
+cr.plot_variability_summary(results.all_runs_metrics, results.final_val_accuracies)
 ```
 
-## Development Status
+## 📚 Examples
 
-**Stable (v0.0.2)**: Core variability studies, memory management, basic statistical analysis
+### Comparing Model Architectures
+```python
+# Define different architectures
+architectures = {
+    'shallow': create_shallow_model,
+    'deep': create_deep_model,
+    'regularized': create_regularized_model
+}
 
-**Working**: Model wrappers, data handlers, visualization, GPU memory management
+# Run studies for each
+results_dict = {}
+for name, builder in architectures.items():
+    results = cr.run_variability_study(builder, data_handler, config)
+    results_dict[name] = results.final_val_accuracies
 
-**Experimental**: Advanced statistical features, hyperparameter tuning
+# Statistical comparison with publication-ready output
+comparison = cr.compare_multiple_models(results_dict)
+print(cr.generate_statistical_summary([comparison['overall_test']]))
+```
 
-**Planned for v0.1.0**: API stabilization, comprehensive documentation, performance optimization
+### Memory-Safe Training
+```python
+# Process isolation for guaranteed cleanup
+with cr.managed_memory(use_process_isolation=True):
+    for i in range(100):  # Train 100 models without memory leaks
+        model = create_large_model()
+        model.fit(data)
+        # Memory automatically cleaned after each iteration
+```
 
-## Dependencies
+## 🛠️ Development Status
 
-**Core Requirements:**
-- `pandas`, `numpy`, `scikit-learn`
+**Current Version: 0.0.4** (Pre-release)
 
-**Framework Support:**
-- `tensorflow` (neural networks, image/text/timeseries data handlers)
-- `scipy` (statistical tests and effect sizes)
+This is an active research project under rapid development. The API may change between versions until v1.0.0.
 
-**Visualization:**
-- `matplotlib`, `seaborn` (plotting functions)
+### What's Working
+- ✅ Core variability analysis
+- ✅ Statistical tests with effect sizes
+- ✅ Memory management
+- ✅ Basic plotting functions
+- ✅ 68 automated tests (31% coverage)
 
-**Optional Features:**
-- `mlflow` (experiment tracking)
-- `psutil` (memory monitoring)
-- `shap` (model explainability)
-- `hyperopt` (hyperparameter optimization)
+## 🧪 Testing
+```bash
+# Run all tests
+pytest tests/
 
-## Contributing
+# Run with coverage report
+pytest tests/ --cov=caracal --cov-report=term-missing
 
-This project is in active development. The v0.0.2 release represents a major stability milestone, but feedback is still valuable for API design and feature prioritization.
+# Run specific test module
+pytest tests/test_config.py -v
+```
 
-**Areas for feedback:**
-- Use cases and workflow integration
-- API design and ease of use
-- Performance with your specific models/datasets
-- Additional statistical analysis needs
+## 🐳 Docker Development
 
-## License
+For GPU-enabled development with all dependencies:
+```bash
+# Build the Docker image
+./build-gpu.sh
 
-MIT License - see LICENSE file for details.
+# Run Jupyter Lab
+./run-gpu.sh
+
+# Run tests in container
+./run-gpu.sh pytest tests/
+```
+
+## 📖 Documentation
+
+Full documentation is in development. For now:
+- See `examples/` for Jupyter notebooks
+- Check docstrings for detailed API documentation
+- Review tests for usage patterns
+
+## 🤝 Contributing
+
+We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+### Development Setup
+```bash
+# Fork and clone the repository
+git clone https://github.com/YOUR_USERNAME/caracal.git
+cd caracal
+
+# Install in development mode
+pip install -e .[dev]
+
+# Run tests to verify setup
+pytest tests/
+```
+
+## 📊 Feature Availability
+
+Caracal has modular dependencies. Core functionality always works, with optional features available when dependencies are installed:
+```python
+import caracal
+caracal.print_feature_summary()  # See what's available
+```
+
+| Feature | Required Package | Install Command |
+|---------|-----------------|-----------------|
+| TensorFlow/Keras Support | tensorflow | `pip install tensorflow` |
+| Advanced Statistics | scipy | `pip install scipy` |
+| Plotting | matplotlib, seaborn | `pip install matplotlib seaborn` |
+| MLflow Integration | mlflow | `pip install mlflow` |
+| Model Explainability | shap | `pip install shap` |
+| Hyperparameter Tuning | hyperopt | `pip install hyperopt` |
+
+## 📝 Citation
+
+If you use Caracal in your research, please cite:
+```bibtex
+@software{caracal2025,
+  title = {Caracal: A Framework for ML Model Variability Analysis},
+  author = {Kizlik, Stephen},
+  year = {2025},
+  url = {https://github.com/skizlik/caracal},
+  version = {0.0.4}
+}
+```
+
+## 📄 License
+
+MIT License - see [LICENSE](LICENSE) file for details.
+
+## 🙏 Acknowledgments
+
+Special thanks to all early users and contributors who are helping shape Caracal's development.
+
+## 📮 Contact
+
+- **Issues**: [GitHub Issues](https://github.com/skizlik/caracal/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/skizlik/caracal/discussions)
+- **Author**: Stephen Kizlik (stephen.kizlik@gmail.com)
 
 ---
 
-*Caracal: **Computational Analysis of Run And Convergence Algorithms Library***
-
-**Repository**: https://github.com/skizlik/caracal
+**Note**: Caracal is under active development. We recommend pinning to specific versions in production:
+```
+caracal==0.0.4
+```
