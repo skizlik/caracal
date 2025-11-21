@@ -19,7 +19,7 @@ print(f"Accuracy: {model.score(X_test, y_test):.2%}")  # 95% - ship it!
 # With Caracal: Know your model's true reliability
 results = cr.run_variability_study(model_builder, data_handler, config, num_runs=10)
 stability = cr.assess_training_stability(results.all_runs_metrics)
-print(f"Accuracy: {results.mean_accuracy:.2%} ± {results.std_accuracy:.2%}")  # 95% ± 8% 😱
+print(f"Accuracy: {results.mean_accuracy:.2%} (SD {results.std_accuracy:.2%})")  # 95% ± 8% 😱
 print(f"Stability: {stability['stability_assessment']}")  # "LOW" - don't ship!
 ```
 
@@ -52,18 +52,37 @@ print(f"Stability: {stability['stability_assessment']}")  # "LOW" - don't ship!
 ## 🚀 Quick Start
 
 ### Installation
+
+### From GitHub (User)
+
+To install the latest version directly from the repository:
 ```bash
 # Basic installation
-pip install caracal
+pip install git+[https://github.com/skizlik/caracal.git](https://github.com/skizlik/caracal.git)
 
-# With all optional dependencies
-pip install caracal[all]
-
-# Development installation
-git clone https://github.com/skizlik/caracal.git
-cd caracal
-pip install -e .
+# With all optional dependencies (quotes often required for shells like Zsh/PowerShell)
+pip install "caracal[all] @ git+[https://github.com/skizlik/caracal.git](https://github.com/skizlik/caracal.git)"
 ```
+
+### For Development
+
+If you want to modify the code or run the tests locally:
+```bash
+# 1. Clone the repository
+git clone [https://github.com/skizlik/caracal.git](https://github.com/skizlik/caracal.git)
+cd caracal
+
+# 2. Create a virtual environment (recommended)
+python -m venv venv
+# Windows:
+.\venv\Scripts\activate
+# Linux/Mac:
+source venv/bin/activate
+
+# 3. Install in editable mode with all dependencies
+pip install -e ".[all]"
+```
+
 
 ### Basic Usage
 ```python
