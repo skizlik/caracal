@@ -39,7 +39,9 @@ build/
 # Development and debugging files
 _dev/
 codebase.py
+testbase.py
 make_codebase.sh
+make_testbase.sh
 cudalist.sh
 
 # Package management (keeping requirements.txt as primary)

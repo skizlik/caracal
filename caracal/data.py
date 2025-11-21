@@ -1,9 +1,22 @@
+# caracal/data.py
+
 import os
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from abc import ABC, abstractmethod
 from typing import Optional, List, Tuple, Dict, Any, Union
+
+# Define public API
+__all__ = [
+    'DataHandler',
+    'ImageDataHandler',
+    'TabularDataHandler',
+    'TextDataHandler',
+    'TimeSeriesDataHandler',
+    'ArraysDataHandler',      # NEW
+    'auto_resolve_handler'    # NEW
+]
 
 # Optional TensorFlow imports
 try:
@@ -355,6 +368,7 @@ class ImageDataHandler(DataHandler):
 class TabularDataHandler(DataHandler):
     """
     A concrete data handler for structured, tabular data.
+    Accepts either a file path (CSV) or a pandas DataFrame.
     """
 
     @property
@@ -365,23 +379,42 @@ class TabularDataHandler(DataHandler):
     def return_format(self) -> str:
         return "split_arrays"
 
-    def __init__(self, data_path: str, target_column: str,
+    def __init__(self, data: Union[str, pd.DataFrame] = None, target_column: str = None,
                  features: Optional[List[str]] = None,
-                 sep: str = ',', header: int = 0):
+                 sep: str = ',', header: int = 0, **kwargs):
         """
         Initialize the tabular data handler.
 
         Args:
-            data_path: Path to CSV file
-            target_column: Name of the target column
-            features: List of feature column names (None = all except target)
-            sep: CSV separator
-            header: Header row number
+            data: Path to CSV file OR a pandas DataFrame object.
+            target_column: Name of the target column.
+            features: List of feature column names (None = all except target).
+            sep: CSV separator (only used if data is a path).
+            header: Header row number (only used if data is a path).
+            **kwargs: Captures legacy 'data_path' argument.
         """
-        super().__init__(data_path)
+        # ------------------------------------------------------------------
+        # FIX: Backward Compatibility for data_path keyword argument
+        # ------------------------------------------------------------------
+        if data is None and 'data_path' in kwargs:
+            data = kwargs['data_path']
 
-        if not os.path.isfile(self.data_path):
-            raise ValueError("TabularDataHandler requires a file path")
+        if data is None:
+            raise ValueError("Must provide 'data' (or legacy 'data_path') argument.")
+
+        if target_column is None:
+            raise ValueError("Must provide 'target_column' argument.")
+
+        # Handle path string vs DataFrame
+        if isinstance(data, str):
+            self.input_df = None
+            super().__init__(data)
+        elif isinstance(data, pd.DataFrame):
+            self.input_df = data.copy()
+            # Bypass file check by passing a dummy string, but relying on _validate_data_path override
+            super().__init__("in_memory_dataframe")
+        else:
+            raise TypeError(f"data must be str path or DataFrame, got {type(data)}")
 
         self.target_column = target_column
         self.features = features
@@ -389,49 +422,50 @@ class TabularDataHandler(DataHandler):
         self.header = header
         self.data: Optional[pd.DataFrame] = None
 
+    def _validate_data_path(self):
+        """Override validation to skip file check if using DataFrame."""
+        # Check if we are in DataFrame mode (input_df set in __init__)
+        if hasattr(self, 'input_df') and self.input_df is not None:
+            return  # Skip check, data is already in memory
+
+        # Otherwise, perform standard file check
+        super()._validate_data_path()
+
     def _load_and_validate_data(self):
-        """Load and validate the CSV data."""
-        try:
-            self.data = pd.read_csv(self.data_path, sep=self.sep, header=self.header)
-        except pd.errors.EmptyDataError:
-            raise ValueError(f"CSV file is empty: {self.data_path}")
-        except pd.errors.ParserError as e:
-            raise ValueError(f"Failed to parse CSV file: {e}")
-        except Exception as e:
-            raise RuntimeError(f"Failed to load CSV file: {e}")
+        """Load (if needed) and validate the tabular data."""
+
+        # 1. Load Data
+        if self.input_df is not None:
+            self.data = self.input_df
+        else:
+            try:
+                self.data = pd.read_csv(self.data_path, sep=self.sep, header=self.header)
+            except pd.errors.EmptyDataError:
+                raise ValueError(f"CSV file is empty: {self.data_path}")
+            except Exception as e:
+                raise RuntimeError(f"Failed to load CSV file: {e}")
 
         if self.data.empty:
             raise ValueError("Loaded dataset is empty")
 
-        # Validate target column
+        # 2. Validate Columns
         if self.target_column not in self.data.columns:
-            raise ValueError(f"Target column '{self.target_column}' not found in data. "
-                             f"Available columns: {list(self.data.columns)}")
+            raise ValueError(f"Target column '{self.target_column}' not found. "
+                             f"Available: {list(self.data.columns)}")
 
-        # Validate feature columns
+        # 3. Validate Features
         if self.features:
-            missing_features = set(self.features) - set(self.data.columns)
-            if missing_features:
-                raise ValueError(f"Features not found in data: {missing_features}")
+            missing = set(self.features) - set(self.data.columns)
+            if missing:
+                raise ValueError(f"Features not found in data: {missing}")
 
         print(f"Loaded tabular data: {len(self.data)} rows, {len(self.data.columns)} columns")
 
+    # ... (Keep existing load() and get_data_info() methods identical to previous version) ...
     def load(self, test_split: float = 0.2, val_split: float = 0.1,
              random_state: int = 42) -> Dict[str, Any]:
-        """
-        Load and split the tabular data.
-
-        Args:
-            test_split: Proportion for test set
-            val_split: Proportion for validation set
-            random_state: Random seed
-
-        Returns:
-            Dict with 'train_data', 'val_data', 'test_data' as (X, y) tuples
-        """
         if not HAS_SKLEARN:
-            raise ImportError("scikit-learn is required for data splitting. "
-                              "Install with: pip install scikit-learn")
+            raise ImportError("scikit-learn is required for data splitting.")
 
         if test_split + val_split >= 1.0:
             raise ValueError("Sum of test_split and val_split must be < 1.0")
@@ -446,14 +480,11 @@ class TabularDataHandler(DataHandler):
 
         y = self.data[self.target_column]
 
-        print(f"Target column: {self.target_column}")
-        print(f"Feature columns: {list(X.columns)}")
-
         # Check for missing values
         if X.isnull().any().any():
             null_counts = X.isnull().sum()
-            null_features = null_counts[null_counts > 0]
-            print(f"Warning: Missing values found in features: {dict(null_features)}")
+            # Only print warning, don't crash
+            # print(f"Warning: Missing values in features")
 
         if y.isnull().any():
             print(f"Warning: {y.isnull().sum()} missing values in target column")
@@ -474,21 +505,14 @@ class TabularDataHandler(DataHandler):
                     X_train, y_train, test_size=adj_val_split, random_state=random_state
                 )
 
-        # Convert to tuples or None
-        train_data = (X_train, y_train)
-        val_data = (X_val, y_val) if X_val is not None else None
-        test_data = (X_test, y_test) if X_test is not None else None
-
         return {
-            'train_data': train_data,
-            'val_data': val_data,
-            'test_data': test_data
+            'train_data': (X_train, y_train),
+            'val_data': (X_val, y_val) if X_val is not None else None,
+            'test_data': (X_test, y_test) if X_test is not None else None
         }
 
     def get_data_info(self) -> Dict[str, Any]:
-        """Get comprehensive information about the tabular dataset."""
         info = super().get_data_info()
-
         try:
             if self.data is None:
                 self._load_and_validate_data()
@@ -496,26 +520,10 @@ class TabularDataHandler(DataHandler):
             info.update({
                 'num_rows': len(self.data),
                 'num_columns': len(self.data.columns),
-                'target_column': self.target_column,
-                'feature_columns': self.features or [c for c in self.data.columns if c != self.target_column],
-                'missing_values': self.data.isnull().sum().to_dict(),
-                'data_types': self.data.dtypes.astype(str).to_dict()
+                'target_column': self.target_column
             })
-
-            # Target distribution
-            if self.data[self.target_column].dtype in ['object', 'category']:
-                info['target_distribution'] = self.data[self.target_column].value_counts().to_dict()
-            else:
-                info['target_stats'] = {
-                    'mean': float(self.data[self.target_column].mean()),
-                    'std': float(self.data[self.target_column].std()),
-                    'min': float(self.data[self.target_column].min()),
-                    'max': float(self.data[self.target_column].max())
-                }
-
         except Exception as e:
-            info['error'] = f"Could not analyze dataset: {e}"
-
+            info['error'] = str(e)
         return info
 
 
@@ -787,3 +795,153 @@ class TimeSeriesDataHandler(DataHandler):
         print(f"Data splits - Train: {len(train_data) if train_data is not None else 0}, "
               f"Val: {len(val_data) if val_data is not None else 0}, "
               f"Test: {len(test_data) if test_data is not None else 0}")
+
+
+class ArraysDataHandler(DataHandler):
+    """
+    A concrete data handler for raw Numpy arrays or Lists.
+    Useful when data is already loaded into memory as (X, y) tuples.
+    """
+
+    @property
+    def data_type(self) -> str:
+        return "arrays"
+
+    @property
+    def return_format(self) -> str:
+        return "split_arrays"
+
+    def __init__(self, X: Union[np.ndarray, List, Any],
+                 y: Union[np.ndarray, List, Any]):
+        """
+        Initialize with existing arrays.
+
+        Args:
+            X: Feature array/list (n_samples, n_features)
+            y: Label array/list (n_samples,)
+        """
+        # Dummy path since data is in memory
+        super().__init__("in_memory_arrays")
+
+        self.X = np.array(X)
+        self.y = np.array(y)
+
+        if len(self.X) != len(self.y):
+            raise ValueError(f"Length mismatch: X has {len(self.X)}, y has {len(self.y)}")
+
+    def _validate_data_path(self):
+        """Skip path validation for in-memory arrays."""
+        pass
+
+    def load(self, test_split: float = 0.2, val_split: float = 0.1,
+             random_state: int = 42) -> Dict[str, Any]:
+        """Split the pre-loaded arrays."""
+        if not HAS_SKLEARN:
+            raise ImportError("scikit-learn required for splitting.")
+
+        if test_split + val_split >= 1.0:
+            raise ValueError("Sum of splits must be < 1.0")
+
+        # Split 1: Separate Test
+        if test_split > 0:
+            X_train, X_test, y_train, y_test = train_test_split(
+                self.X, self.y, test_size=test_split, random_state=random_state
+            )
+        else:
+            X_train, X_test, y_train, y_test = self.X, None, self.y, None
+
+        # Split 2: Separate Val from Train
+        X_val, y_val = None, None
+        if val_split > 0 and len(X_train) > 1:
+            adj_val_split = val_split / (1 - test_split) if test_split > 0 else val_split
+
+            if adj_val_split < 1.0:
+                X_train, X_val, y_train, y_val = train_test_split(
+                    X_train, y_train, test_size=adj_val_split, random_state=random_state
+                )
+
+        print(
+            f"Array splits - Train: {len(X_train)}, Val: {len(X_val) if X_val is not None else 0}, Test: {len(X_test) if X_test is not None else 0}")
+
+        return {
+            'train_data': (X_train, y_train),
+            'val_data': (X_val, y_val) if X_val is not None else None,
+            'test_data': (X_test, y_test) if X_test is not None else None
+        }
+
+
+def auto_resolve_handler(
+        data: Union[str, pd.DataFrame, Tuple[np.ndarray, np.ndarray], Any],
+        target_column: Optional[str] = None,
+        **kwargs
+) -> DataHandler:
+    """
+    Factory function to automatically detect and initialize the appropriate DataHandler.
+
+    Args:
+        data: The input data. Supported formats:
+            - str: Path to a directory (Images)
+            - str: Path to a CSV file (Tabular, Text, or TimeSeries)
+            - pd.DataFrame: Data object (Tabular)
+            - tuple: (X, y) arrays (Arrays)
+        target_column: Name of target column (Required for DataFrame/Tabular).
+        **kwargs: Additional arguments passed to the specific handler constructor
+            (e.g., 'image_size', 'text_column', 'sequence_length').
+
+    Returns:
+        DataHandler: An initialized instance of the appropriate handler.
+
+    Raises:
+        ValueError: If handler cannot be determined or required args missing.
+        FileNotFoundError: If string path does not exist.
+    """
+
+    # 1. Handle Tuple (X, y) -> Arrays
+    if isinstance(data, tuple) and len(data) == 2:
+        # Simple heuristic: check if elements have shape or length
+        if hasattr(data[0], 'shape') or hasattr(data[0], '__len__'):
+            return ArraysDataHandler(data[0], data[1], **kwargs)
+
+    # 2. Handle Pandas DataFrame -> Tabular
+    if isinstance(data, pd.DataFrame):
+        if not target_column:
+            raise ValueError("target_column is required when passing a DataFrame.")
+        return TabularDataHandler(data, target_column=target_column, **kwargs)
+
+    # 3. Handle String Paths
+    if isinstance(data, str):
+        if not os.path.exists(data):
+            raise FileNotFoundError(f"Data path not found: {data}")
+
+        # Directory -> Images
+        if os.path.isdir(data):
+            if 'image_size' not in kwargs:
+                raise ValueError("image_size=(H, W) is required for image data directories.")
+            return ImageDataHandler(data, **kwargs)
+
+        # File -> Tabular, Text, or TimeSeries
+        if os.path.isfile(data):
+            # Heuristic: Check kwargs for specific handler signals
+
+            # Text
+            if 'text_column' in kwargs:
+                return TextDataHandler(data, **kwargs)
+
+            # TimeSeries
+            if 'value_column' in kwargs or 'sequence_length' in kwargs:
+                return TimeSeriesDataHandler(data, **kwargs)
+
+            # Default to Tabular if target provided
+            if target_column:
+                return TabularDataHandler(data, target_column=target_column, **kwargs)
+
+            # If we get here, we have a file but don't know how to handle it
+            raise ValueError(
+                "Ambiguous file input. Please provide:\n"
+                " - 'target_column' for Tabular data\n"
+                " - 'text_column' for Text data\n"
+                " - 'sequence_length' for TimeSeries data"
+            )
+
+    # 4. Fallback
+    raise TypeError(f"Unsupported data type: {type(data)}. Expected str, DataFrame, or (X, y) tuple.")

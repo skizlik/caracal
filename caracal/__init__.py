@@ -129,6 +129,21 @@ try:
 except ImportError:
     pass
 
+try:
+    from .data import ArraysDataHandler
+    __all__.append('ArraysDataHandler')
+    _data_handlers_loaded.append('ArraysDataHandler')
+except ImportError:
+    pass
+
+# Placed after handlers because it orchestrates them
+try:
+    from .data import auto_resolve_handler
+    __all__.append('auto_resolve_handler')
+except ImportError:
+    pass
+
+
 # Statistical analysis functions (enhanced with comprehensive testing)
 try:
     from .analysis import (
