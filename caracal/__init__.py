@@ -42,6 +42,9 @@ from .memory import (
     get_memory_info
 )
 
+# Global settings
+from .settings import set_verbose, set_display_plots
+
 # Build __all__ list with core functionality
 __all__ = [
     # Core classes
@@ -77,10 +80,16 @@ __all__ = [
     'cleanup_gpu_memory',
     'get_memory_info',
 
+    # session variables
+    'set_verbose',
+    'set_display_plots',
+
     # Feature availability flags
     'TENSORFLOW_AVAILABLE',
     'SKLEARN_AVAILABLE',
     '__version__',
+
+
 ]
 
 # Framework-specific model wrappers
