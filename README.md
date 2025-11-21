@@ -205,19 +205,6 @@ Full documentation is in development. For now:
 
 We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
-### Development Setup
-```bash
-# Fork and clone the repository
-git clone https://github.com/YOUR_USERNAME/caracal.git
-cd caracal
-
-# Install in development mode
-pip install -e .[dev]
-
-# Run tests to verify setup
-pytest tests/
-```
-
 ## 📊 Feature Availability
 
 Caracal has modular dependencies. Core functionality always works, with optional features available when dependencies are installed:
