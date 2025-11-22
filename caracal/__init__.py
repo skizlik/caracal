@@ -80,7 +80,7 @@ __all__ = [
     'cleanup_gpu_memory',
     'get_memory_info',
 
-    # session variables
+    # session display variables
     'set_verbose',
     'set_display_plots',
 
