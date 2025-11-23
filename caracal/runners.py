@@ -14,8 +14,11 @@ from dataclasses import dataclass
 from .core import BaseModelWrapper
 from .config import ModelConfig
 from .data import DataHandler
-from .loggers import BaseLogger
 from .memory import get_memory_manager, get_memory_info
+from .loggers import BaseLogger
+
+# The SYSTEM Logger (Standard Python Convention)
+from .settings import logger
 
 # Optional TensorFlow for cleanup
 try:
@@ -30,17 +33,13 @@ except ImportError:
 class ExperimentRunner:
     """
     Engine for running variability studies with memory management.
-
-    Supports two execution modes:
-    1. Standard: Fast in-process training with best-effort cleanup
-    2. Process isolation: Each run in subprocess for guaranteed memory cleanup
     """
 
     def __init__(self,
                  model_builder: Callable[[ModelConfig], BaseModelWrapper],
                  data_handler: DataHandler,
                  model_config: ModelConfig,
-                 logger: Optional[BaseLogger] = None,
+                 tracker: Optional[BaseLogger] = None,  # <--- RENAMED
                  use_process_isolation: bool = False,
                  gpu_memory_limit: Optional[int] = None,
                  verbose: bool = True):
@@ -48,18 +47,16 @@ class ExperimentRunner:
         Initialize experiment runner.
 
         Args:
-            model_builder: Function that creates a model from config
-            data_handler: Handler for data loading and preparation
-            model_config: Configuration for model training
-            logger: Logger for metrics and parameters
-            use_process_isolation: If True, run each training in subprocess
-            gpu_memory_limit: GPU memory limit in MB (None = no limit)
-            verbose: If True, print progress messages
+            tracker: Object to track experiment metrics (e.g. MLflowLogger).
+                     If None, uses basic BaseLogger.
         """
         self.model_builder = model_builder
         self.data_handler = data_handler
         self.model_config = model_config
-        self.logger = logger or BaseLogger()
+
+        # The Experiment Tracker (Records results/metrics)
+        self.tracker = tracker or BaseLogger()  # <--- RENAMED ATTR
+
         self.use_process_isolation = use_process_isolation
         self.gpu_memory_limit = gpu_memory_limit
         self.verbose = verbose
@@ -81,7 +78,7 @@ class ExperimentRunner:
 
         # Load and prepare data
         if verbose:
-            print("Loading and preparing data...")
+            logger.info("Loading and preparing data...")  # <--- System Logger
 
         try:
             data_dict = self.data_handler.load()
@@ -90,9 +87,9 @@ class ExperimentRunner:
             self.test_data = data_dict.get('test_data')
 
             if verbose:
-                print(f"Data loaded successfully")
+                logger.info(f"Data loaded successfully")
                 if self.val_data is None:
-                    print("Warning: No validation data provided")
+                    logger.warning("No validation data provided")
 
         except Exception as e:
             raise RuntimeError(f"Failed to load data: {e}")
@@ -135,16 +132,7 @@ class ExperimentRunner:
             )
 
     def _run_single_fit(self, run_id: int, epochs: int) -> Optional[pd.DataFrame]:
-        """
-        Run a single training iteration.
-
-        Args:
-            run_id: Unique identifier for this run
-            epochs: Number of epochs to train
-
-        Returns:
-            DataFrame with training history or None if failed
-        """
+        """Run a single training iteration."""
         if self.use_process_isolation:
             return self._run_single_fit_isolated(run_id, epochs)
         else:
@@ -153,10 +141,10 @@ class ExperimentRunner:
     def _run_single_fit_isolated(self, run_id: int, epochs: int) -> Optional[pd.DataFrame]:
         """Execute training in isolated subprocess."""
         if self.verbose:
-            print(f" - Run {run_id}: Starting in isolated process...")
+            logger.info(f" - Run {run_id}: Starting in isolated process...")
 
-        # Log run start
-        self.logger.log_params({'run_id': run_id, 'mode': 'isolated'})
+        # Log run start (Metric Tracker)
+        self.tracker.log_params({'run_id': run_id, 'mode': 'isolated'})
 
         # Execute in subprocess
         result = self.memory_manager.run_isolated(
@@ -179,7 +167,7 @@ class ExperimentRunner:
                 history_data = result['result']['history']
                 if not history_data:
                     if self.verbose:
-                        print(f" - Run {run_id}: No training history returned")
+                        logger.warning(f" - Run {run_id}: No training history returned")
                     self.failed_runs.append(run_id)
                     return None
 
@@ -198,32 +186,32 @@ class ExperimentRunner:
                 if 'val_accuracy' in history_df.columns:
                     final_val_acc = float(history_df['val_accuracy'].iloc[-1])
                     self.final_val_accuracies.append(final_val_acc)
-                    self.logger.log_metric('final_val_accuracy', final_val_acc, step=run_id)
+                    self.tracker.log_metric('final_val_accuracy', final_val_acc, step=run_id)
 
                 # Store test metrics
                 test_metrics = result['result'].get('test_metrics')
                 if test_metrics:
                     self.final_test_metrics.append(test_metrics)
                     for key, value in test_metrics.items():
-                        self.logger.log_metric(f'final_test_{key}', value, step=run_id)
+                        self.tracker.log_metric(f'final_test_{key}', value, step=run_id)
 
                 if self.verbose:
-                    print(f" - Run {run_id}: Completed successfully (isolated)")
+                    logger.info(f" - Run {run_id}: Completed successfully (isolated)")
 
                 return history_df
 
             except Exception as e:
                 if self.verbose:
-                    print(f" - Run {run_id}: Failed to process results: {e}")
+                    logger.error(f" - Run {run_id}: Failed to process results: {e}")
                 self.failed_runs.append(run_id)
                 return None
         else:
             # Training failed
             error_msg = result.get('error', 'Unknown error')
             if self.verbose:
-                print(f" - Run {run_id}: Failed - {error_msg}")
+                logger.error(f" - Run {run_id}: Failed - {error_msg}")
                 if 'traceback' in result and self.verbose:
-                    print(f"   Traceback: {result['traceback'][:500]}")
+                    logger.info(f"   Traceback: {result['traceback'][:500]}...")
 
             self.failed_runs.append(run_id)
             return None
@@ -231,10 +219,10 @@ class ExperimentRunner:
     def _run_single_fit_standard(self, run_id: int, epochs: int) -> Optional[pd.DataFrame]:
         """Execute training in standard mode (in-process)."""
         if self.verbose:
-            print(f" - Run {run_id}: Training...")
+            logger.info(f" - Run {run_id}: Training...")
 
-        # Log run start
-        self.logger.log_params({'run_id': run_id, 'mode': 'standard'})
+        # Log run start (Metric Tracker)
+        self.tracker.log_params({'run_id': run_id, 'mode': 'standard'})
 
         wrapped_model = None
         try:
@@ -253,7 +241,7 @@ class ExperimentRunner:
             # Extract history
             if not hasattr(wrapped_model, 'history') or wrapped_model.history is None:
                 if self.verbose:
-                    print(f" - Run {run_id}: No training history produced")
+                    logger.warning(f" - Run {run_id}: No training history produced")
                 self.failed_runs.append(run_id)
                 return None
 
@@ -277,7 +265,7 @@ class ExperimentRunner:
             if self.val_data is not None and 'val_accuracy' in history_df.columns:
                 final_val_acc = float(history_df['val_accuracy'].iloc[-1])
                 self.final_val_accuracies.append(final_val_acc)
-                self.logger.log_metric('final_val_accuracy', final_val_acc, step=run_id)
+                self.tracker.log_metric('final_val_accuracy', final_val_acc, step=run_id)
 
             # Evaluate on test data
             if self.test_data is not None:
@@ -285,19 +273,19 @@ class ExperimentRunner:
                     test_metrics = wrapped_model.evaluate(data=self.test_data)
                     self.final_test_metrics.append(test_metrics)
                     for key, value in test_metrics.items():
-                        self.logger.log_metric(f'final_test_{key}', value, step=run_id)
+                        self.tracker.log_metric(f'final_test_{key}', value, step=run_id)
                 except Exception as e:
                     if self.verbose:
-                        print(f"   Warning: Test evaluation failed: {e}")
+                        logger.warning(f"   Warning: Test evaluation failed: {e}")
 
             if self.verbose:
-                print(f" - Run {run_id}: Completed successfully")
+                logger.info(f" - Run {run_id}: Completed successfully")
 
             return history_df
 
         except Exception as e:
             if self.verbose:
-                print(f" - Run {run_id}: Failed with error: {e}")
+                logger.error(f" - Run {run_id}: Failed with error: {e}")
             self.failed_runs.append(run_id)
             return None
 
@@ -315,45 +303,35 @@ class ExperimentRunner:
             cleanup_result = self.memory_manager.cleanup()
             if self.verbose and cleanup_result.memory_freed_mb:
                 if cleanup_result.memory_freed_mb > 10:  # Only report significant cleanup
-                    print(f"   Freed {cleanup_result.memory_freed_mb:.1f}MB")
+                    logger.info(f"   Freed {cleanup_result.memory_freed_mb:.1f}MB")
 
     def run_study(self, num_runs: int = 5,
                   epochs_per_run: Optional[int] = None,
                   stop_on_failure_rate: float = 0.5) -> Tuple[
         List[pd.DataFrame], List[float], List[Dict[str, Any]]]:
-        """
-        Execute the complete variability study.
-
-        Args:
-            num_runs: Number of training runs to perform
-            epochs_per_run: Epochs per run (defaults to config.epochs)
-            stop_on_failure_rate: Stop if failure rate exceeds this threshold
-
-        Returns:
-            Tuple of (all_runs_metrics, final_val_accuracies, final_test_metrics)
-        """
+        """Execute the complete variability study."""
         if epochs_per_run is None:
             epochs_per_run = self.model_config.get('epochs', 10)
 
-        # Log study parameters
-        self.logger.log_params({
+        # Log study parameters (Metric Tracker)
+        self.tracker.log_params({
             'num_runs': num_runs,
             'epochs_per_run': epochs_per_run,
             'use_process_isolation': self.use_process_isolation,
             'gpu_memory_limit': self.gpu_memory_limit
         })
-        self.logger.log_params(self.model_config.params)
+        self.tracker.log_params(self.model_config.params)
 
-        # Print study configuration
+        # Print study configuration (System Logger)
         if self.verbose:
             mode = "with process isolation" if self.use_process_isolation else "in standard mode"
-            print(f"\nStarting Variability Study")
-            print(f"  Runs: {num_runs}")
-            print(f"  Epochs per run: {epochs_per_run}")
-            print(f"  Execution mode: {mode}")
+            logger.info(f"\nStarting Variability Study")
+            logger.info(f"  Runs: {num_runs}")
+            logger.info(f"  Epochs per run: {epochs_per_run}")
+            logger.info(f"  Execution mode: {mode}")
             if self.gpu_memory_limit:
-                print(f"  GPU memory limit: {self.gpu_memory_limit}MB")
-            print()
+                logger.info(f"  GPU memory limit: {self.gpu_memory_limit}MB")
+            logger.info("")
 
         # Execute runs
         try:
@@ -363,7 +341,7 @@ class ExperimentRunner:
                     failure_rate = len(self.failed_runs) / (i + 1)
                     if failure_rate > stop_on_failure_rate:
                         if self.verbose:
-                            print(f"\nStopping due to high failure rate: {failure_rate:.1%}")
+                            logger.error(f"\nStopping due to high failure rate: {failure_rate:.1%}")
                         break
 
                 # Run single training
@@ -375,32 +353,32 @@ class ExperimentRunner:
                 if (i + 1) % 10 == 0 and self.verbose:
                     memory_info = get_memory_info()
                     if 'process_rss_mb' in memory_info:
-                        print(f"  Memory check: {memory_info['process_rss_mb']:.1f}MB")
+                        logger.info(f"  Memory check: {memory_info['process_rss_mb']:.1f}MB")
 
         except KeyboardInterrupt:
             if self.verbose:
-                print(f"\n\nStudy interrupted after {len(self.all_runs_metrics)} runs")
+                logger.warning(f"\n\nStudy interrupted after {len(self.all_runs_metrics)} runs")
 
         finally:
             # Final cleanup for standard mode
             if not self.use_process_isolation:
                 final_cleanup = self.memory_manager.cleanup()
                 if self.verbose and final_cleanup.memory_freed_mb:
-                    print(f"\nFinal cleanup freed {final_cleanup.memory_freed_mb:.1f}MB")
+                    logger.info(f"\nFinal cleanup freed {final_cleanup.memory_freed_mb:.1f}MB")
 
-            self.logger.end_run()
+            self.tracker.end_run()
 
         # Print summary
         if self.verbose:
             successful = len(self.all_runs_metrics)
-            print(f"\nStudy Summary:")
-            print(f"  Successful runs: {successful}/{num_runs}")
+            logger.info(f"\nStudy Summary:")
+            logger.info(f"  Successful runs: {successful}/{num_runs}")
             if self.failed_runs:
-                print(f"  Failed runs: {self.failed_runs}")
+                logger.warning(f"  Failed runs: {self.failed_runs}")
             if self.final_val_accuracies:
                 mean_acc = np.mean(self.final_val_accuracies)
                 std_acc = np.std(self.final_val_accuracies)
-                print(f"  Val accuracy: {mean_acc:.4f} (SD = {std_acc:.4f})")
+                logger.info(f"  Val accuracy: {mean_acc:.4f} (SD = {std_acc:.4f})")
 
         return self.all_runs_metrics, self.final_val_accuracies, self.final_test_metrics
 
@@ -429,9 +407,6 @@ def _isolated_training_function(model_builder, config, train_data,
                                 val_data, test_data, epochs, run_id):
     """
     Training function executed in isolated subprocess.
-
-    This function must be at module level to be picklable by multiprocessing.
-    It should be self-contained and not rely on any global state.
     """
     import gc
 
@@ -556,7 +531,7 @@ class VariabilityStudyResults:
             rows.append(row)
 
         return pd.DataFrame(rows)
-    
+
     def summarize(self) -> str:
         """Generate text summary of results."""
         lines = [
@@ -584,27 +559,6 @@ class VariabilityStudyResults:
                                      correction_method: str = 'holm') -> Dict[str, Any]:
         """
         Perform statistical comparison of runs for the specified metric.
-
-        This treats each run as a separate "model" and performs pairwise
-        statistical comparisons to assess variability between runs.
-
-        Args:
-            metric_name: Name of metric to compare (e.g., 'val_accuracy', 'val_loss')
-            alpha: Significance level for statistical tests
-            correction_method: Multiple comparison correction method
-                              ('holm', 'bonferroni', 'fdr_bh')
-
-        Returns:
-            Dictionary containing statistical comparison results with keys:
-            - 'overall_test': Overall statistical test result
-            - 'pairwise_comparisons': Dict of pairwise comparison results
-            - 'correction_method': The correction method used
-            - 'significant_comparisons': List of significant comparison names
-
-        Examples:
-            >>> results = run_variability_study(...)
-            >>> comparison = results.compare_models_statistically('val_accuracy')
-            >>> print(comparison['overall_test'].conclusion)
         """
         from .analysis import compare_multiple_models
 
@@ -622,23 +576,17 @@ class VariabilityStudyResults:
             )
 
         # Convert to the format expected by compare_multiple_models
-        # (Dict[str, pd.Series])
         metrics_dict = {}
         for run_name, value in final_metrics.items():
-            # Create a Series with single value for each run
-            # Use all values from that run's history for the metric if available
-            run_idx = int(run_name.split('_')[-1]) - 1  # Extract run number
+            run_idx = int(run_name.split('_')[-1]) - 1
 
             if run_idx < len(self.all_runs_metrics):
                 df = self.all_runs_metrics[run_idx]
                 if metric_name in df.columns:
-                    # Use all epoch values for this run
                     metrics_dict[run_name] = df[metric_name]
                 else:
-                    # Fallback: create single-value series
                     metrics_dict[run_name] = pd.Series([value], name=run_name)
             else:
-                # Fallback: create single-value series
                 metrics_dict[run_name] = pd.Series([value], name=run_name)
 
         # Perform statistical comparison
@@ -650,6 +598,7 @@ class VariabilityStudyResults:
 
         return comparison_results
 
+
 # Convenience function
 def run_variability_study(
         model_builder: Callable[[ModelConfig], BaseModelWrapper],
@@ -657,32 +606,18 @@ def run_variability_study(
         model_config: ModelConfig,
         num_runs: int = 5,
         epochs_per_run: Optional[int] = None,
-        logger: Optional[BaseLogger] = None,
+        tracker: Optional[BaseLogger] = None,  # <--- RENAMED
         use_process_isolation: bool = False,
         gpu_memory_limit: Optional[int] = None,
         verbose: bool = True) -> VariabilityStudyResults:
     """
     Run a complete variability study.
-
-    Args:
-        model_builder: Function to create models
-        data_handler: Data loading and preparation
-        model_config: Model configuration
-        num_runs: Number of runs to perform
-        epochs_per_run: Epochs per run (defaults to config.epochs)
-        logger: Optional logger for metrics
-        use_process_isolation: If True, run each training in subprocess
-        gpu_memory_limit: GPU memory limit in MB
-        verbose: Print progress messages
-
-    Returns:
-        VariabilityStudyResults with all metrics and analysis methods
     """
     runner = ExperimentRunner(
         model_builder=model_builder,
         data_handler=data_handler,
         model_config=model_config,
-        logger=logger,
+        tracker=tracker,  # <--- RENAMED
         use_process_isolation=use_process_isolation,
         gpu_memory_limit=gpu_memory_limit,
         verbose=verbose
