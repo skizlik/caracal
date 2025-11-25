@@ -7,6 +7,16 @@ from typing import Union
 _DISPLAY_PLOTS: bool = True
 _VERBOSE: bool = True
 
+# THEME CONFIGURATION
+THEME: Dict[str, str] = {
+    'train': '#1f77b4',      # Standard Blue
+    'val': '#ff7f0e',        # Standard Orange
+    'test': '#2ca02c',       # Standard Green
+    'baseline': 'gray',      # For forest plots
+    'significant': 'crimson',# For highlighting significance
+    'grid': '#e6e6e6',       # Light gray for grids
+}
+
 # Setup Library Logger
 logger = logging.getLogger("caracal")
 logger.setLevel(logging.INFO)
@@ -39,6 +49,21 @@ def set_display_plots(display: bool):
     global _DISPLAY_PLOTS
     _DISPLAY_PLOTS = display
 
+def set_theme(theme_name: str):
+    """Quickly switch between color presets."""
+    global THEME
+    if theme_name == 'dark':
+        THEME.update({
+            'train': '#4db8ff', 'val': '#ff9933', 'test': '#66ff66',
+            'baseline': '#888888', 'significant': '#ff4d4d', 'grid': '#444444'
+        })
+    elif theme_name == 'publication':
+        # Grayscale/High Contrast
+        THEME.update({
+            'train': 'black', 'val': 'gray', 'test': 'black',
+            'baseline': 'black', 'significant': 'black', 'grid': '#eeeeee'
+        })
+        
 def should_display() -> bool:
     """Internal check for plotting functions."""
     return _DISPLAY_PLOTS
