@@ -35,6 +35,16 @@ def dummy_model_func():
     return builder
 
 @pytest.fixture
+def dummy_model_func_2():
+    """A second dummy model builder with a different name."""
+    def builder_2(config=None):
+        mock = MagicMock(spec=BaseModelWrapper)
+        mock.fit.return_value = None
+        mock.predict.return_value = np.array([0, 1])
+        return mock
+    return builder_2
+
+@pytest.fixture
 def mock_runner_results():
     """Creates a fake VariabilityStudyResults object."""
     mock_results = MagicMock()
@@ -44,7 +54,7 @@ def mock_runner_results():
 
 # --- Tests for variability_study ---
 
-@patch("caracal.api._run_study_internal")
+@patch("caracal.api._run_study")  # FIX: Updated name from _run_study_internal
 def test_variability_study_dataframe(mock_run, sample_df, dummy_model_func, mock_runner_results):
     """Test standard usage with DataFrame."""
     # Arrange
@@ -63,7 +73,7 @@ def test_variability_study_dataframe(mock_run, sample_df, dummy_model_func, mock
     # Assert
     assert results == mock_runner_results
     
-    # Verify _run_study_internal was called
+    # Verify _run_study was called
     mock_run.assert_called_once()
     
     # Verify Config construction
@@ -74,7 +84,7 @@ def test_variability_study_dataframe(mock_run, sample_df, dummy_model_func, mock
     assert config_arg['epochs'] == 5
     assert config_arg['learning_rate'] == 0.01  # Verify kwargs passthrough
 
-@patch("caracal.api._run_study_internal")
+@patch("caracal.api._run_study") # FIX: Updated name
 def test_variability_study_arrays(mock_run, sample_arrays, dummy_model_func, mock_runner_results):
     """Test usage with numpy tuples."""
     mock_run.return_value = mock_runner_results
@@ -85,8 +95,7 @@ def test_variability_study_arrays(mock_run, sample_arrays, dummy_model_func, moc
         runs=2
     )
     
-    # Verify DataHandler was resolved correctly (implicitly checked by _run_study execution)
-    # We can inspect the handler passed to the runner
+    # Verify DataHandler was resolved correctly
     passed_handler = mock_run.call_args.kwargs['data_handler']
     assert passed_handler.data_type == 'arrays'
 
@@ -98,7 +107,7 @@ def test_variability_study_invalid_data():
 def test_variability_study_missing_target(sample_df):
     """Test missing target column error for DataFrames."""
     with pytest.raises(ValueError, match="target_column is required"):
-        api.variability_study(lambda x: x, data=sample_df)  # No target_column
+        api.variability_study(lambda x: x, data=sample_df)
 
 
 # --- Tests for compare_models ---
@@ -106,15 +115,12 @@ def test_variability_study_missing_target(sample_df):
 @patch("caracal.api._stat_compare")
 @patch("caracal.api.variability_study")
 def test_compare_models_flow(mock_var_study, mock_stat_compare, sample_df, dummy_model_func, mock_runner_results):
-    """
-    Test that compare_models correctly orchestrates multiple studies.
-    We mock variability_study so we don't recurse infinitely or run logic twice.
-    """
+    """Test that compare_models correctly orchestrates multiple studies."""
     # Arrange
     mock_var_study.return_value = mock_runner_results
     mock_stat_compare.return_value = {'overall_test': 'PASSED'}
     
-    models = [dummy_model_func, dummy_model_func] # Compare same model twice for simplicity
+    models = [dummy_model_func, dummy_model_func_2]
     
     # Act
     result = api.compare_models(
@@ -133,9 +139,8 @@ def test_compare_models_flow(mock_var_study, mock_stat_compare, sample_df, dummy
     mock_stat_compare.assert_called_once()
     
     # Check that it extracted the metrics correctly
-    # _stat_compare receives a dictionary of Series
     stats_call_args = mock_stat_compare.call_args[0][0]
-    assert len(stats_call_args) == 2  # Two models
+    assert len(stats_call_args) == 2
     assert isinstance(stats_call_args[list(stats_call_args.keys())[0]], pd.Series)
 
 @patch("caracal.api.variability_study")
@@ -165,21 +170,23 @@ class DummyClassifier:
     def fit(self, X, y): pass
     def predict(self, X): pass
 
-def test_wrap_model_builder_class():
+def test_get_model_builder_class():
     """Test wrapping a raw class."""
-    wrapper = api._wrap_model_builder(DummyClassifier)
-    # Calling the wrapper should give us a Caracal BaseModelWrapper
+    # FIX: Updated function name to _get_model_builder
+    wrapper = api._get_model_builder(DummyClassifier)
     model_instance = wrapper(ModelConfig({}))
     assert isinstance(model_instance, BaseModelWrapper)
 
-def test_wrap_model_builder_instance():
-    """Test wrapping an instance (should warn but work)."""
+def test_get_model_builder_instance():
+    """Test wrapping an instance."""
     instance = DummyClassifier()
-    wrapper = api._wrap_model_builder(instance)
+    # FIX: Updated function name
+    wrapper = api._get_model_builder(instance)
     model_instance = wrapper(ModelConfig({}))
     assert isinstance(model_instance, BaseModelWrapper)
 
-def test_wrap_model_builder_invalid():
+def test_get_model_builder_invalid():
     """Test rejection of invalid model inputs."""
     with pytest.raises(ValueError, match="Invalid model input"):
-        api._wrap_model_builder("not a model")
+        # FIX: Updated function name
+        api._get_model_builder("not a model")
