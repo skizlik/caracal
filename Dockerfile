@@ -1,10 +1,10 @@
-# Use verified NVIDIA CUDA image that matches your system
+# Use YOUR verified image (Do not change this)
 FROM nvidia/cuda:12.9.1-cudnn-devel-ubuntu22.04
 
 # Prevent interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install system dependencies including Python
+# System dependencies
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Install additional CUDA runtime libraries that TensorFlow needs
+# CUDA Runtime
 RUN apt-get update && apt-get install -y \
     cuda-runtime-12-9 \
     libcudnn8 \
@@ -25,26 +25,23 @@ RUN apt-get update && apt-get install -y \
     libcusparse-12-9 \
     && rm -rf /var/lib/apt/lists/*
 
-# Create python symlink
+# Symlink python
 RUN ln -s /usr/bin/python3 /usr/bin/python
 
-# Test Python version
-RUN python --version
-
-# Upgrade pip first
+# --- THE STABILITY FIX ---
+# 1. Upgrade pip
 RUN pip install --upgrade pip
 
-# Protobuf is giving me a lot of trouble, let's try forcing it first
-RUN pip install "protobuf<4.0.0"
-
-# Install library's core dependencies
+# 2. Install the "Golden Combination"
+# We explicitly pin incompatible libraries to versions that play nice together.
+# TensorFlow 2.15.0 is the last version before the Keras 3 transition (highly stable).
+# MLflow < 2.11 still supports protobuf < 4.
 RUN pip --default-timeout=120 install \
-    tensorflow==2.16.1 \
+    "protobuf<4.0.0" \
+    "tensorflow==2.15.0" \
+    "mlflow<2.11.0" \
     jupyterlab \
-    poetry
-
-# Install ML packages
-RUN pip --default-timeout=120 install \
+    poetry \
     numpy \
     pandas \
     matplotlib \
@@ -52,29 +49,22 @@ RUN pip --default-timeout=120 install \
     scikit-learn \
     scipy \
     pillow \
-    joblib
-
-# Install pytest
-RUN pip --default-timeout=120 install \
+    joblib \
     pytest \
-    pytest-cov
-
-# Install other dependencies
-RUN pip --default-timeout=120 install \
+    pytest-cov \
     hyperopt \
     shap \
-    mlflow \
     sphinx \
     sphinx-rtd-theme \
-    numpydoc
+    numpydoc \
+    ipywidgets
 
-# Set CUDA environment variables
+# Set Environment
 ENV TF_CPP_MIN_LOG_LEVEL=2
 ENV TF_ENABLE_ONEDNN_OPTS=0
 ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH}
 ENV CUDA_CACHE_DISABLE=1
 ENV TF_XLA_FLAGS="--tf_xla_auto_jit=2 --tf_xla_cpu_global_jit"
-
 
 # Working directory
 WORKDIR /home/appuser/projects

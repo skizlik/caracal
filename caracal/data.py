@@ -895,6 +895,9 @@ def auto_resolve_handler(
         ValueError: If handler cannot be determined or required args missing.
         FileNotFoundError: If string path does not exist.
     """
+    # 0. If data is already a DataHandler, just return it.
+    if isinstance(data, DataHandler):
+        return data
 
     # 1. Handle Tuple (X, y) -> Arrays
     if isinstance(data, tuple) and len(data) == 2:
