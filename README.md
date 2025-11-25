@@ -1,257 +1,152 @@
-# Caracal
+# Caracal: Rigorous Evaluation for Machine Learning
 
-[![Tests](https://github.com/skizlik/caracal/workflows/Tests/badge.svg)](https://github.com/skizlik/caracal/actions)
-[![Coverage](https://img.shields.io/badge/coverage-31%25-yellow)](https://github.com/skizlik/caracal)
-[![Python](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/downloads/)
-[![Version](https://img.shields.io/badge/version-0.0.4-blue)](https://github.com/skizlik/caracal/releases)
-[![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/skizlik/caracal/blob/main/LICENSE)
+![CI/CD](https://github.com/skizlik/caracal/actions/workflows/test.yml/badge.svg)
+![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
 
-**Caracal** (Comparison And Reproducibility Analysis for Computational Algorithmic Learning) is a Python library for analyzing variability, reproducibility, and stability in machine learning models.
+**Caracal** is a framework for conducting systematic **variability studies** and **statistical comparisons** of machine learning models.
 
-## 🎯 The Problem Caracal Solves
+Unlike standard training loops that produce a single "lucky" result, Caracal treats model training as a stochastic process. It automates the execution of multiple runs, handles GPU memory isolation, and performs rigorous hypothesis testing to determine if Model A is *actually* better than Model B.
 
-Your model achieves 95% accuracy. But is it *really* reliable?
-```python
-# Without Caracal: Deploy and hope for the best
-model.fit(X_train, y_train)
-print(f"Accuracy: {model.score(X_test, y_test):.2%}")  # 95% - ship it!
+---
 
-# With Caracal: Know your model's true reliability
-results = cr.run_variability_study(model_builder, data_handler, config, num_runs=10)
-stability = cr.assess_training_stability(results.all_runs_metrics)
-print(f"Accuracy: {results.mean_accuracy:.2%} (SD {results.std_accuracy:.2%})")  # 95% ± 8% 😱
-print(f"Stability: {stability['stability_assessment']}")  # "LOW" - don't ship!
-```
+## 🚀 Key Features
 
-## ✨ Key Features
+* **One-Line Variability Studies:** Automate $N$ runs of a model with a single function call.
+* **Process Isolation:** Runs every training session in a separate system process to guarantee zero GPU memory leaks between runs.
+* **Statistical Rigor:** Automatically selects the correct hypothesis test (T-test vs Mann-Whitney) based on data distribution assumptions.
+* **Effect Sizes:** Reports *Cohen's d* and *Rank-Biserial Correlation* to distinguish statistical significance from practical significance.
+* **Professional Visualization:** Publication-ready Boxplots, Forest Plots, and Training Trajectories.
 
-### 🔬 **Statistical Rigor**
-- **Publication-ready statistical tests** with effect sizes and assumption checking
-- Mann-Whitney U, Wilcoxon signed-rank, ANOVA, Kruskal-Wallis tests
-- Multiple comparison corrections (Holm, Bonferroni, FDR)
-- Automatic assumption validation with recommendations
+---
 
-### 📊 **Variability Analysis**
-- Run multiple training iterations to measure model stability
-- Detect initialization-dependent performance variations
-- Identify convergence issues and training instabilities
-- Assess reproducibility across different random seeds
+## 📦 Installation
 
-### 🧹 **Memory Management**
-- **Automatic GPU memory cleanup** prevents OOM errors
-- Optional process isolation for guaranteed cleanup
-- Memory monitoring and reporting
-- Smart resource management for long-running experiments
+Caracal is currently installed directly from source:
 
-### 📈 **Comprehensive Visualization**
-- Training history plots with confidence bands
-- Statistical comparison matrices
-- Stability assessment dashboards
-- Distribution plots for final metrics
-
-## 🚀 Quick Start
-
-### Installation
-
-### From GitHub (User)
-
-To install the latest version directly from the repository:
 ```bash
-# Basic installation
+# Basic installation (from GitHub)
 pip install git+[https://github.com/skizlik/caracal.git](https://github.com/skizlik/caracal.git)
 
-# With all optional dependencies (quotes often required for shells like Zsh/PowerShell)
+# With all optional dependencies (TensorFlow, MLflow, SHAP, Hyperopt)
+# Note: Quotes are often required for brackets in Zsh/PowerShell
 pip install "caracal[all] @ git+[https://github.com/skizlik/caracal.git](https://github.com/skizlik/caracal.git)"
 ```
 
-### For Development
-
-If you want to modify the code or run the tests locally:
+**For Developers (Editable Install):**
 ```bash
 # 1. Clone the repository
 git clone [https://github.com/skizlik/caracal.git](https://github.com/skizlik/caracal.git)
 cd caracal
 
-# 2. Create a virtual environment (recommended)
-python -m venv venv
-# Windows:
-.\venv\Scripts\activate
-# Linux/Mac:
-source venv/bin/activate
-
-# 3. Install in editable mode with all dependencies
+# 2. Install in editable mode
 pip install -e ".[all]"
 ```
 
+---
 
-### Basic Usage
-```python
-import caracal as cr
-from caracal import ModelConfig, run_variability_study
+## ⚡ Quick Start
 
-# 1. Define your model configuration
-config = ModelConfig({
-    'epochs': 20,
-    'batch_size': 32,
-    'learning_rate': 0.001
-})
+### 1. The Variability Study
+Run a model 5 times to see how stable it is. Caracal automatically handles DataFrames, CSV paths, or Numpy arrays.
 
-# 2. Create a model builder function
-def create_model(config):
-    model = build_your_model()  # Your model creation logic
-    return cr.KerasModelWrapper(model)
-
-# 3. Set up your data
-data_handler = cr.TabularDataHandler('data.csv', target_column='label')
-
-# 4. Run variability study
-results = run_variability_study(
-    model_builder=create_model,
-    data_handler=data_handler,
-    model_config=config,
-    num_runs=10
-)
-
-# 5. Analyze results
-print(results.summarize())
-
-# 6. Statistical comparison
-comparison = results.compare_models_statistically('val_accuracy')
-print(f"Runs are statistically different: {comparison['overall_test'].is_significant()}")
-
-# 7. Visualize
-cr.plot_variability_summary(results.all_runs_metrics, results.final_val_accuracies)
-```
-
-## 📚 Examples
-
-### Comparing Model Architectures
-```python
-# Define different architectures
-architectures = {
-    'shallow': create_shallow_model,
-    'deep': create_deep_model,
-    'regularized': create_regularized_model
-}
-
-# Run studies for each
-results_dict = {}
-for name, builder in architectures.items():
-    results = cr.run_variability_study(builder, data_handler, config)
-    results_dict[name] = results.final_val_accuracies
-
-# Statistical comparison with publication-ready output
-comparison = cr.compare_multiple_models(results_dict)
-print(cr.generate_statistical_summary([comparison['overall_test']]))
-```
-
-### Memory-Safe Training
-```python
-# Process isolation for guaranteed cleanup
-with cr.managed_memory(use_process_isolation=True):
-    for i in range(100):  # Train 100 models without memory leaks
-        model = create_large_model()
-        model.fit(data)
-        # Memory automatically cleaned after each iteration
-```
-
-## 🛠️ Development Status
-
-**Current Version: 0.0.4** (Pre-release)
-
-This is an active research project under rapid development. The API may change between versions until v1.0.0.
-
-### What's Working
-- ✅ Core variability analysis
-- ✅ Statistical tests with effect sizes
-- ✅ Memory management
-- ✅ Basic plotting functions
-- ✅ 68 automated tests (31% coverage)
-
-## 🧪 Testing
-```bash
-# Run all tests
-pytest tests/
-
-# Run with coverage report
-pytest tests/ --cov=caracal --cov-report=term-missing
-
-# Run specific test module
-pytest tests/test_config.py -v
-```
-
-## 🐳 Docker Development
-
-For GPU-enabled development with all dependencies:
-```bash
-# Build the Docker image
-./build-gpu.sh
-
-# Run Jupyter Lab
-./run-gpu.sh
-
-# Run tests in container
-./run-gpu.sh pytest tests/
-```
-
-## 📖 Documentation
-
-Full documentation is in development. For now:
-- See `examples/` for Jupyter notebooks
-- Check docstrings for detailed API documentation
-- Review tests for usage patterns
-
-## 🤝 Contributing
-
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-## 📊 Feature Availability
-
-Caracal has modular dependencies. Core functionality always works, with optional features available when dependencies are installed:
 ```python
 import caracal
-caracal.print_feature_summary()  # See what's available
+from sklearn.ensemble import RandomForestClassifier
+
+# 1. Run the study
+results = caracal.variability_study(
+    model=RandomForestClassifier,
+    data="dataset.csv",
+    target_column="label",
+    runs=5,
+    epochs=10
+)
+
+# 2. View statistical summary (Mean, Std, Min, Max)
+print(results.summarize())
+
+# 3. Visualize stability (Trajectories & Histogram)
+caracal.plot_variability_summary(
+    results.all_runs_metrics, 
+    results.final_val_accuracies
+)
 ```
 
-| Feature | Required Package | Install Command |
-|---------|-----------------|-----------------|
-| TensorFlow/Keras Support | tensorflow | `pip install tensorflow` |
-| Advanced Statistics | scipy | `pip install scipy` |
-| Plotting | matplotlib, seaborn | `pip install matplotlib seaborn` |
-| MLflow Integration | mlflow | `pip install mlflow` |
-| Model Explainability | shap | `pip install shap` |
-| Hyperparameter Tuning | hyperopt | `pip install hyperopt` |
+### 2. Comparing Models (The Showdown)
+Compare a Random Forest against a Decision Tree with statistical guarantees.
 
-## 📝 Citation
+```python
+from sklearn.tree import DecisionTreeClassifier
 
-If you use Caracal in your research, please cite:
-```bibtex
-@software{caracal2025,
-  title = {Caracal: A Framework for ML Model Variability Analysis},
-  author = {Kizlik, Stephen},
-  year = {2025},
-  url = {https://github.com/skizlik/caracal},
-  version = {0.0.4}
-}
+# 1. Run the comparison
+comparison = caracal.compare_models(
+    models=[RandomForestClassifier, DecisionTreeClassifier],
+    data="dataset.csv",
+    target_column="label",
+    runs=10,
+    metric="val_accuracy"
+)
+
+# 2. Get the verdict
+print(comparison['overall_test'].conclusion)
+# Output: "Mann-Whitney U test indicates a statistically significant difference (p=0.002)..."
+
+# 3. Visualize the difference (Boxplot)
+caracal.plot_comparison_boxplots(comparison)
 ```
-
-## 📄 License
-
-MIT License - see [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-Special thanks to all early users and contributors who are helping shape Caracal's development.
-
-## 📮 Contact
-
-- **Issues**: [GitHub Issues](https://github.com/skizlik/caracal/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/skizlik/caracal/discussions)
-- **Author**: Stephen Kizlik (stephen.kizlik@gmail.com)
 
 ---
 
-**Note**: Caracal is under active development. We recommend pinning to specific versions in production:
+## 🛠️ Advanced Configuration
+
+### GPU Process Isolation
+For Deep Learning (TensorFlow/Keras), memory leaks are common when retraining models in a loop. Caracal solves this by spawning a fresh process for every run.
+
+```python
+results = caracal.variability_study(
+    model=create_keras_model,
+    data=image_dir,
+    runs=5,
+    use_process_isolation=True,  # <--- The Magic Switch
+    gpu_memory_limit=4096        # Limit to 4GB per run
+)
 ```
-caracal==0.0.4
+
+### Logging & Theming
+Caracal uses a centralized configuration system.
+
+```python
+import caracal.settings
+
+# Silence console output
+caracal.set_verbose(False)
+
+# Prevent plots from blocking execution (for scripts)
+caracal.set_display_plots(False)
+
+# Change plot colors
+caracal.settings.set_theme('publication') # Black & White high contrast
 ```
+
+---
+
+## 📊 Visualizations
+
+Caracal provides three primary visualization tools:
+
+1.  **`plot_variability_summary`**: Shows training curves, final loss distribution, and convergence stability.
+2.  **`plot_comparison_boxplots`**: Side-by-side comparison of model performance distributions with significance annotations.
+3.  **`plot_comparison_forest`**: Visualizes the effect size (difference from baseline) with confidence intervals.
+
+---
+
+## 🤝 Contributing
+
+1.  Fork the repository.
+2.  Create a feature branch (`git checkout -b feature/amazing-feature`).
+3.  Run tests (`pytest tests/ -v`).
+4.  Commit your changes.
+5.  Push to the branch and open a Pull Request.
+
+**License:** MIT
