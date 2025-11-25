@@ -152,6 +152,12 @@ try:
 except ImportError:
     pass
 
+# Simple API
+try:
+    from .api import variability_study, compare_models
+    __all__.extend(['variability_study', 'compare_models'])
+except ImportError:
+    pass
 
 # Statistical analysis functions (enhanced with comprehensive testing)
 try:
