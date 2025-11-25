@@ -1,7 +1,7 @@
 # caracal/settings.py
 import logging
 import sys
-from typing import Union
+from typing import Union, Dict, Optional
 
 # Global Configuration
 _DISPLAY_PLOTS: bool = True
