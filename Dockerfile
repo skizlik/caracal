@@ -31,9 +31,14 @@ RUN ln -s /usr/bin/python3 /usr/bin/python
 # Test Python version
 RUN python --version
 
+# Upgrade pip first
+RUN pip install --upgrade pip
+
+# Protobuf is giving me a lot of trouble, let's try forcing it first
+RUN pip install "protobuf<4.0.0"
+
 # Install library's core dependencies
 RUN pip --default-timeout=120 install \
-    protobuf<4.0.0 \
     tensorflow==2.16.1 \
     jupyterlab \
     poetry
