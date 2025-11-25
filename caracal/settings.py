@@ -63,7 +63,7 @@ def set_theme(theme_name: str):
             'train': 'black', 'val': 'gray', 'test': 'black',
             'baseline': 'black', 'significant': 'black', 'grid': '#eeeeee'
         })
-        
+
 def should_display() -> bool:
     """Internal check for plotting functions."""
     return _DISPLAY_PLOTS

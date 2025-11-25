@@ -237,6 +237,8 @@ try:
     from .plotting import (
         plot_confusion_matrix,
         plot_training_history,
+        plot_comparison_boxplots,
+        plot_comparison_forest,
         plot_roc_curve,
         plot_precision_recall_curve,
         plot_averaged_autocorr,
@@ -252,6 +254,8 @@ try:
     __all__.extend([
         'plot_confusion_matrix',
         'plot_training_history',
+        'plot_comparison_boxplots',
+        'plot_comparison_forest',
         'plot_roc_curve',
         'plot_precision_recall_curve',
         'plot_averaged_autocorr',

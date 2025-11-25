@@ -2,28 +2,22 @@
 import numpy as np
 import pandas as pd
 from typing import Dict, Any, Optional, List, Tuple, Union, TYPE_CHECKING
+import warnings
 
-# Import global settings
 from . import settings
 
 # Optional plotting dependencies
 try:
     import matplotlib.pyplot as plt
     from matplotlib.figure import Figure
+    import seaborn as sn
 
-    HAS_MATPLOTLIB = True
+    HAS_PLOTTING = True
 except ImportError:
     plt = None
     Figure = None
-    HAS_MATPLOTLIB = False
-
-try:
-    import seaborn as sn
-
-    HAS_SEABORN = True
-except ImportError:
     sn = None
-    HAS_SEABORN = False
+    HAS_PLOTTING = False
 
 # Optional sklearn for metrics
 try:
@@ -45,14 +39,11 @@ if TYPE_CHECKING:
     from .core import BaseModelWrapper
 
 
-def _check_matplotlib():
-    if not HAS_MATPLOTLIB:
-        raise ImportError("matplotlib required for plotting. Install with: pip install matplotlib")
+# --- Helpers ---
 
-
-def _check_seaborn():
-    if not HAS_SEABORN:
-        raise ImportError("seaborn required for plotting. Install with: pip install seaborn")
+def _check_plotting():
+    if not HAS_PLOTTING:
+        raise ImportError("matplotlib and seaborn are required. Install with: pip install matplotlib seaborn")
 
 
 def _check_sklearn_metrics():
@@ -65,29 +56,44 @@ def _check_tensorflow_utils():
         raise ImportError("TensorFlow required for multi-class plotting. Install with: pip install tensorflow")
 
 
-def _should_show(show_arg: Optional[bool]) -> bool:
-    """Helper to determine whether to display the plot."""
-    if show_arg is not None:
-        return show_arg
-    return settings.should_display()
-
-
-def _handle_plot_output(fig: 'Figure', show_arg: Optional[bool]) -> Optional['Figure']:
+def _finalize_plot(fig: 'Figure', show_arg: Optional[bool]) -> Optional['Figure']:
     """
     Centralized logic for showing/returning plots.
-    If we show the plot, we return None to prevent Jupyter from double-rendering.
+    If showing: returns None (to prevent Jupyter double-display).
+    If not showing: returns the Figure object (for saving/modification).
     """
     should_show = show_arg if show_arg is not None else settings.should_display()
 
     if should_show:
         plt.show()
-        return None
+        return None  # Prevents Jupyter from rendering the return value
+
     return fig
 
-def plot_confusion_matrix(cm_df: pd.DataFrame, title: str = "", show: Optional[bool] = None) -> 'Figure':
+
+def _find_metric_columns(df: pd.DataFrame, metric: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Smart column detection. Tries to find train/val columns for a metric
+    even if prefixes don't match exactly.
+    """
+    base = metric.replace('train_', '').replace('val_', '')
+
+    # Candidates for training
+    train_candidates = [f'train_{base}', base, f'{base}_train', 'loss' if base == 'loss' else None]
+    train_col = next((c for c in train_candidates if c and c in df.columns), None)
+
+    # Candidates for validation
+    val_candidates = [f'val_{base}', f'{base}_val', f'test_{base}']
+    val_col = next((c for c in val_candidates if c and c in df.columns), None)
+
+    return train_col, val_col
+
+
+# --- Standard Plots ---
+
+def plot_confusion_matrix(cm_df: pd.DataFrame, title: str = "", show: Optional[bool] = None) -> Optional['Figure']:
     """Plots a confusion matrix heatmap from a DataFrame."""
-    _check_matplotlib()
-    _check_seaborn()
+    _check_plotting()
 
     fig = plt.figure(figsize=(10, 8))
     sn.heatmap(cm_df, annot=True, fmt="d", cmap='Blues')
@@ -95,15 +101,13 @@ def plot_confusion_matrix(cm_df: pd.DataFrame, title: str = "", show: Optional[b
     plt.xlabel("Predicted Label")
     plt.ylabel("True Label")
 
-    return _handle_plot_output(fig, show)
+    return _finalize_plot(fig, show)
 
 
-def plot_training_history(history: Any, title: str = None, metrics: List[str] = None,
-                          show: Optional[bool] = None) -> 'Figure':
-    """
-    Plot training and validation metrics from a history object.
-    """
-    _check_matplotlib()
+def plot_training_history(history: Any, title: str = None, metrics: List[str] = None, show: Optional[bool] = None) -> \
+Optional['Figure']:
+    """Plot training and validation metrics."""
+    _check_plotting()
 
     # Convert various history formats to DataFrame
     if isinstance(history, pd.DataFrame):
@@ -116,10 +120,10 @@ def plot_training_history(history: Any, title: str = None, metrics: List[str] = 
         try:
             history_df = pd.DataFrame(history.history)
         except AttributeError:
-            print("Error: The provided history object format is not supported.")
+            settings.logger.error("The provided history object format is not supported.")
             return None
 
-    # Determine metrics to plot
+    # Determine metrics
     if metrics is None:
         available = history_df.columns.tolist()
         default_metrics = []
@@ -133,7 +137,7 @@ def plot_training_history(history: Any, title: str = None, metrics: List[str] = 
         else:
             metrics = [col for col in available if not col.startswith('val_') and col != 'epoch']
             if not metrics:
-                print("No metrics found to plot.")
+                settings.logger.warning("No metrics found to plot.")
                 return None
 
     if title is None:
@@ -146,21 +150,17 @@ def plot_training_history(history: Any, title: str = None, metrics: List[str] = 
     if num_metrics == 1:
         axes = [axes]
 
-    train_color = '#1f77b4'
-    val_color = '#ff7f0e'
+    colors = settings.THEME
 
     for i, metric in enumerate(metrics):
         ax = axes[i]
 
-        # Handle column naming
-        if metric in history_df.columns:
-            train_col = metric
-        elif f'train_{metric}' in history_df.columns:
-            train_col = f'train_{metric}'
-        else:
+        # Use smart column finding
+        train_col, val_col = _find_metric_columns(history_df, metric)
+
+        if not train_col:
             continue
 
-        val_col = f'val_{metric}'
         metric_display = metric.replace('_', ' ').title()
         if metric.lower() in ['mse', 'mae', 'rmse']:
             metric_display = metric.upper()
@@ -169,10 +169,10 @@ def plot_training_history(history: Any, title: str = None, metrics: List[str] = 
 
         epochs = range(1, len(history_df) + 1)
 
-        ax.plot(epochs, history_df[train_col], label=f'Training', color=train_color, linewidth=2)
+        ax.plot(epochs, history_df[train_col], label=f'Training', color=colors['train'], linewidth=2)
 
-        if val_col in history_df.columns:
-            ax.plot(epochs, history_df[val_col], label=f'Validation', color=val_color, linewidth=2)
+        if val_col:
+            ax.plot(epochs, history_df[val_col], label=f'Validation', color=colors['val'], linewidth=2)
             final_train = history_df[train_col].iloc[-1]
             final_val = history_df[val_col].iloc[-1]
             ax.plot([], [], ' ', label=f'Final: {final_train:.4f} / {final_val:.4f}')
@@ -185,27 +185,28 @@ def plot_training_history(history: Any, title: str = None, metrics: List[str] = 
         ax.set_ylabel(metric_display, fontsize=11)
         ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
 
+        # Set y-axis limits for bounded metrics
         if any(x in metric.lower() for x in ['accuracy', 'auc', 'precision', 'recall', 'f1']):
             ax.set_ylim([0, 1.05])
 
         ax.legend(loc='best', framealpha=0.9)
-        ax.grid(True, alpha=0.3)
+        ax.grid(True, alpha=0.3, color=colors.get('grid', '#e6e6e6'))
 
     fig.suptitle(title, fontsize=14, fontweight='bold')
     plt.tight_layout(rect=[0, 0, 1, 0.96])
 
-    return _handle_plot_output(fig, show)
+    return _finalize_plot(fig, show)
 
 
 def plot_roc_curve(model_wrapper: 'BaseModelWrapper', X_test: np.ndarray, y_test: np.ndarray,
-                   title: str = "", show: Optional[bool] = None) -> 'Figure':
+                   title: str = "", show: Optional[bool] = None) -> Optional['Figure']:
     """Plots the ROC curve for a multi-class model."""
-    _check_matplotlib()
+    _check_plotting()
     _check_sklearn_metrics()
     _check_tensorflow_utils()
 
     if not hasattr(model_wrapper, 'predict_proba'):
-        print("Model does not have a predict_proba method. Cannot plot ROC curve.")
+        settings.logger.warning("Model does not have a predict_proba method. Cannot plot ROC curve.")
         return None
 
     y_score = model_wrapper.predict_proba(X_test)
@@ -231,18 +232,18 @@ def plot_roc_curve(model_wrapper: 'BaseModelWrapper', X_test: np.ndarray, y_test
     plt.title(title if title else 'Receiver Operating Characteristic')
     plt.legend(loc="lower right")
 
-    return _handle_plot_output(fig, show)
+    return _finalize_plot(fig, show)
 
 
 def plot_precision_recall_curve(model_wrapper: 'BaseModelWrapper', X_test: np.ndarray, y_test: np.ndarray,
-                                title: str = "", show: Optional[bool] = None) -> 'Figure':
+                                title: str = "", show: Optional[bool] = None) -> Optional['Figure']:
     """Plots the Precision-Recall curve for a multi-class model."""
-    _check_matplotlib()
+    _check_plotting()
     _check_sklearn_metrics()
     _check_tensorflow_utils()
 
     if not hasattr(model_wrapper, 'predict_proba'):
-        print("Model does not have a predict_proba method. Cannot plot Precision-Recall curve.")
+        settings.logger.warning("Model does not have a predict_proba method. Cannot plot Precision-Recall curve.")
         return None
 
     y_score = model_wrapper.predict_proba(X_test)
@@ -267,327 +268,240 @@ def plot_precision_recall_curve(model_wrapper: 'BaseModelWrapper', X_test: np.nd
     plt.title(title if title else 'Precision-Recall Curve')
     plt.legend(loc="lower left")
 
-    return _handle_plot_output(fig, show)
+    return _finalize_plot(fig, show)
 
-def plot_variability_summary(all_runs_metrics_list: List[pd.DataFrame],
-                             final_metrics_series: Union[pd.Series, List],
-                             final_test_series: Optional[Union[pd.Series, List]] = None,
-                             metric: str = 'accuracy',
-                             train_color: str = '#1f77b4',
-                             val_color: str = '#ff7f0e',
-                             show_histogram: bool = True,
-                             show_boxplot: bool = False,
-                             show_mean_lines: bool = True,
-                             show: Optional[bool] = None) -> 'Figure':
-    """Create a comprehensive visualization of a variability study's results."""
-    _check_matplotlib()
-    _check_seaborn()
+
+# --- Variability & Comparison Visualizations ---
+
+def plot_variability_summary(
+        all_runs_metrics_list: List[pd.DataFrame],
+        final_metrics_series: Union[pd.Series, List],
+        final_test_series: Optional[Union[pd.Series, List]] = None,
+        metric: str = 'accuracy',
+        show_histogram: bool = True,
+        show_boxplot: bool = False,
+        show: Optional[bool] = None
+) -> Optional['Figure']:
+    """
+    Multi-panel plot showing training curves, final distribution, and summary boxplot.
+    """
+    _check_plotting()
 
     if not all_runs_metrics_list:
-        print("No metrics provided for plotting.")
+        settings.logger.warning("No run metrics provided to plot.")
         return None
 
-    def to_series(data, metric_key):
-        if isinstance(data, list) and all(isinstance(item, dict) for item in data):
-            return pd.Series([metrics.get(metric_key) for metrics in data])
-        return pd.Series(data)
+    # 1. Resolve Columns using smart detection
+    sample_run = all_runs_metrics_list[0]
+    train_col, val_col = _find_metric_columns(sample_run, metric)
 
-    base_metric = metric.replace('train_', '').replace('val_', '')
-    train_col = f'train_{base_metric}'
-    val_col = f'val_{base_metric}'
+    if not train_col and not val_col:
+        settings.logger.warning(f"Could not find columns for metric '{metric}'. Available: {list(sample_run.columns)}")
+        return None
 
-    if all_runs_metrics_list:
-        first_run = all_runs_metrics_list[0]
-        if base_metric in first_run.columns and train_col not in first_run.columns:
-            train_col = base_metric
-
-    bounded_0_1 = any(x in base_metric.lower() for x in ['accuracy', 'auc', 'precision', 'recall', 'f1'])
-
-    metric_display = base_metric.replace('_', ' ').title()
-    if base_metric.lower() in ['mse', 'mae', 'rmse']:
-        metric_display = base_metric.upper()
-    elif base_metric.lower() == 'auc':
-        metric_display = 'AUC'
-
-    final_metrics_series = to_series(final_metrics_series, val_col)
-    if final_test_series is not None:
-        final_test_series = to_series(final_test_series, f'test_{base_metric}')
-
+    # Setup layout
     num_plots = 1 + int(show_histogram) + int(show_boxplot)
     fig, axes = plt.subplots(1, num_plots, figsize=(7 * num_plots, 6))
+    if num_plots == 1: axes = [axes]
 
-    if num_plots == 1:
-        axes = [axes]
-
-    # 1. Main Variability Plot
+    # PANEL 1: Trajectories
     ax = axes[0]
-    n_runs = len(all_runs_metrics_list)
-    n_epochs = len(all_runs_metrics_list[0]) if all_runs_metrics_list else 0
+    colors = settings.THEME
 
-    if not final_metrics_series.empty:
-        mean_final = np.mean(final_metrics_series)
-        std_final = np.std(final_metrics_series)
-        title = f'{metric_display} Across {n_runs} Training Runs\n(Final: {mean_final:.3f} ± {std_final:.3f})'
-    else:
-        title = f'{metric_display} Across {n_runs} Training Runs'
+    # Clean metric name for display
+    metric_display = metric.replace('val_', '').replace('train_', '').replace('_', ' ').title()
 
-    ax.set_title(title, fontsize=12, fontweight='bold')
-    ax.set_xlabel('Epoch', fontsize=11)
-    ax.set_ylabel(metric_display, fontsize=11)
-    ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
+    for df in all_runs_metrics_list:
+        epochs = range(1, len(df) + 1)
+        if train_col and train_col in df.columns:
+            ax.plot(epochs, df[train_col], color=colors['train'], alpha=0.3)
+        if val_col and val_col in df.columns:
+            ax.plot(epochs, df[val_col], color=colors['val'], alpha=0.3)
 
-    if n_runs <= 5:
-        alpha = 0.8
-    elif n_runs <= 20:
-        alpha = 0.4
-    else:
-        alpha = max(0.15, 1.0 / n_runs * 3)
+    # Add Mean Lines
+    if len(all_runs_metrics_list) > 1:
+        if train_col:
+            try:
+                train_stack = np.array([run[train_col].values for run in all_runs_metrics_list])
+                ax.plot(range(1, train_stack.shape[1] + 1), np.mean(train_stack, axis=0),
+                        color=colors['train'], linewidth=3, label='Mean Train')
+            except ValueError:
+                pass
 
-    for i, run_data in enumerate(all_runs_metrics_list):
-        epochs = run_data['epoch'] if 'epoch' in run_data.columns else range(1, len(run_data) + 1)
+        if val_col:
+            try:
+                val_stack = np.array([run[val_col].values for run in all_runs_metrics_list])
+                ax.plot(range(1, val_stack.shape[1] + 1), np.mean(val_stack, axis=0),
+                        color=colors['val'], linewidth=3, label='Mean Val')
+            except ValueError:
+                pass
 
-        if i == 0:
-            if train_col in run_data.columns:
-                ax.plot(epochs, run_data[train_col], alpha=alpha, color=train_color, label='Training')
-            if val_col in run_data.columns:
-                ax.plot(epochs, run_data[val_col], alpha=alpha, color=val_color, label='Validation')
-        else:
-            if train_col in run_data.columns:
-                ax.plot(epochs, run_data[train_col], alpha=alpha, color=train_color)
-            if val_col in run_data.columns:
-                ax.plot(epochs, run_data[val_col], alpha=alpha, color=val_color)
+    ax.set_title(f"{metric_display} over {len(all_runs_metrics_list)} Runs")
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel(metric_display)
+    ax.legend()
+    ax.grid(True, alpha=0.3, color=colors.get('grid', '#e6e6e6'))
 
-    if show_mean_lines and n_runs > 1:
-        train_runs = [run[train_col].values for run in all_runs_metrics_list if train_col in run.columns]
-        val_runs = [run[val_col].values for run in all_runs_metrics_list if val_col in run.columns]
+    plot_idx = 1
 
-        if train_runs:
-            train_mean = np.mean(train_runs, axis=0)
-            epochs_array = range(1, len(train_mean) + 1)
-            ax.plot(epochs_array, train_mean, color=train_color, linewidth=2.5, linestyle='-', label='Mean Training',
-                    zorder=10)
-
-        if val_runs:
-            val_mean = np.mean(val_runs, axis=0)
-            epochs_array = range(1, len(val_mean) + 1)
-            ax.plot(epochs_array, val_mean, color=val_color, linewidth=2.5, linestyle='-', label='Mean Validation',
-                    zorder=10)
-
-    ax.legend(loc='best', framealpha=0.9)
-    ax.grid(True, alpha=0.3)
-
-    if bounded_0_1:
-        ax.set_ylim([0, 1.05])
-
-    plot_index = 1
-
-    # 2. Histogram
-    if show_histogram and not final_metrics_series.empty:
-        ax = axes[plot_index]
-        mean_final = np.mean(final_metrics_series)
-        std_final = np.std(final_metrics_series)
-
-        sn.histplot(y=final_metrics_series, bins='auto', kde=True, color=val_color, alpha=0.6, ax=ax, stat='density',
-                    label='Validation')
-
-        if final_test_series is not None and not final_test_series.empty:
-            sn.histplot(y=final_test_series, bins='auto', kde=True, color='#2ca02c', alpha=0.6, ax=ax, stat='density',
-                        label='Test')
-
-        ax.axhline(mean_final, color=val_color, linestyle='--', linewidth=2)
-        x_pos = ax.get_xlim()[1] * 0.7
-        ax.text(x_pos, mean_final, f'μ={mean_final:.3f}\nσ={std_final:.3f}', ha='center', va='bottom', fontsize=10,
-                bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor=val_color, alpha=0.8))
-
-        ax.set_title(f'Distribution of Final {metric_display}', fontsize=12)
-        ax.set_ylabel(f'Final {metric_display}', fontsize=11)
-        ax.set_xlabel('Density', fontsize=11)
+    # PANEL 2: Histogram
+    if show_histogram and len(final_metrics_series) > 0:
+        ax = axes[plot_idx]
+        sn.histplot(final_metrics_series, kde=True, ax=ax, color=colors['val'], label='Validation')
+        if final_test_series is not None:
+            sn.histplot(final_test_series, kde=True, ax=ax, color=colors['test'], label='Test')
+        ax.set_title(f"Final {metric_display} Distribution")
         ax.legend()
-        ax.grid(axis='x', alpha=0.3)
-        plot_index += 1
+        plot_idx += 1
 
-    # 3. Boxplot
-    if show_boxplot and not final_metrics_series.empty:
-        ax = axes[plot_index]
-        data_to_plot = [final_metrics_series.values]
-        labels = ['Validation']
-        colors = [val_color]
+    # PANEL 3: Boxplot
+    if show_boxplot and len(final_metrics_series) > 0:
+        ax = axes[plot_idx]
+        data = [final_metrics_series]
+        labels = ['Val']
+        palette = [colors['val']]
 
-        if final_test_series is not None and not final_test_series.empty:
-            data_to_plot.append(final_test_series.values)
+        if final_test_series is not None:
+            data.append(final_test_series)
             labels.append('Test')
-            colors.append('#2ca02c')
+            palette.append(colors['test'])
 
-        bp = ax.boxplot(data_to_plot, labels=labels, patch_artist=True, showmeans=True,
-                        meanprops=dict(marker='D', markerfacecolor='red', markeredgecolor='red'))
+        sn.boxplot(data=data, palette=palette, ax=ax)
+        ax.set_xticklabels(labels)
+        ax.set_title("Performance Spread")
 
-        for patch, color in zip(bp['boxes'], colors):
-            patch.set_facecolor(color)
-            patch.set_alpha(0.6)
-
-        ax.set_ylabel(f'Final {metric_display}', fontsize=11)
-        ax.set_title(f'Final {metric_display} Summary', fontsize=12)
-        ax.grid(axis='y', alpha=0.3)
-
-    plt.suptitle(f'Variability Study: {n_runs} Runs × {n_epochs} Epochs', fontsize=14, fontweight='bold')
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
-
-    return _handle_plot_output(fig, show)
+    plt.tight_layout()
+    return _finalize_plot(fig, show)
 
 
-def plot_multiple_comparisons(comparison_results: Dict[str, Any],
-                              figsize: Tuple[int, int] = (14, 10),
-                              show_effect_sizes: bool = True,
-                              show_corrected: bool = True,
-                              show: Optional[bool] = None) -> 'Figure':
-    """Generates a comprehensive multi-panel visualization for comparison results."""
-    _check_matplotlib()
-    _check_seaborn()
+def plot_comparison_boxplots(
+        comparison_results: Dict[str, Any],
+        metric: str = 'Accuracy',
+        show: Optional[bool] = None
+) -> Optional['Figure']:
+    """
+    OPTION A: Side-by-side boxplots with statistical annotations.
+    Shows the distribution of performance for each model.
+    """
+    _check_plotting()
 
-    fig = plt.figure(figsize=figsize)
-    gs = fig.add_gridspec(3, 2, hspace=0.3, wspace=0.3)
-
-    overall_result = comparison_results['overall_test']
-
-    # 1. Overall test result
-    ax1 = fig.add_subplot(gs[0, 0])
-    p_val = overall_result.p_value
-    is_sig = overall_result.is_significant()
-    color = 'crimson' if is_sig else 'steelblue'
-
-    ax1.barh(['Overall Test'], [p_val], color=color, alpha=0.7, edgecolor='black', linewidth=1.5)
-    ax1.axvline(x=0.05, color='red', linestyle='--', alpha=0.8, linewidth=2, label='α = 0.05')
-    ax1.set_xlabel('P-value', fontsize=11, fontweight='bold')
-    ax1.set_title(f'{overall_result.test_name}\n{"Significant" if is_sig else "Not Significant"}', fontsize=12,
-                  fontweight='bold', color=color)
-    ax1.legend(loc='upper right')
-    ax1.grid(axis='x', alpha=0.3)
-    ax1.text(p_val, 0, f' p={p_val:.4f}', va='center', ha='left' if p_val < 0.5 else 'right', fontsize=10,
-             fontweight='bold')
-
-    # 2. Effect size visualization
-    ax2 = fig.add_subplot(gs[0, 1])
-    if overall_result.effect_size is not None and show_effect_sizes:
-        effect_colors = {'negligible': '#d3d3d3', 'small': '#87CEEB', 'medium': '#FFA500', 'large': '#DC143C'}
-        interpretation = overall_result.effect_size_interpretation
-        color = effect_colors.get(interpretation, 'gray')
-
-        ax2.barh([overall_result.effect_size_name], [overall_result.effect_size], color=color, alpha=0.8,
-                 edgecolor='black', linewidth=1.5)
-        ax2.set_xlabel('Effect Size', fontsize=11, fontweight='bold')
-        ax2.set_title(f'Overall Effect Size\n{interpretation.title()}', fontsize=12, fontweight='bold')
-        ax2.grid(axis='x', alpha=0.3)
-
-        thresholds = {'small': 0.01, 'medium': 0.06, 'large': 0.14}
-        if 'eta' in overall_result.effect_size_name.lower():
-            for label, thresh in thresholds.items():
-                ax2.axvline(thresh, color='gray', linestyle=':', alpha=0.5)
-                ax2.text(thresh, -0.3, label, ha='center', fontsize=8, style='italic')
+    if 'raw_data' in comparison_results:
+        data_dict = comparison_results['raw_data']
+    elif all(isinstance(v, (list, pd.Series, np.ndarray)) for v in comparison_results.values()):
+        data_dict = comparison_results
     else:
-        ax2.text(0.5, 0.5, 'Effect size not available', ha='center', va='center', transform=ax2.transAxes)
-        ax2.axis('off')
+        settings.logger.error("Could not find raw data for boxplots.")
+        return None
 
-    # 3. Summary statistics
-    ax3 = fig.add_subplot(gs[1, 0])
-    ax3.axis('off')
-    summary_lines = [
-        "Statistical Summary", "=" * 30,
-        f"Test: {overall_result.test_name}",
-        f"Statistic: {overall_result.statistic:.3f}",
-        f"P-value: {overall_result.p_value:.4f}",
-        f"Significance: {'Yes ✓' if is_sig else 'No ✗'}", ""
-    ]
-    if overall_result.effect_size is not None:
-        summary_lines.extend([
-            f"Effect Size:",
-            f"  {overall_result.effect_size_name}: {overall_result.effect_size:.3f}",
-            f"  Interpretation: {overall_result.effect_size_interpretation}", ""
-        ])
+    records = []
+    for model_name, scores in data_dict.items():
+        for score in scores:
+            records.append({'Model': model_name, metric: score})
+
+    df = pd.DataFrame(records)
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    # Use themed palette if possible, else default
+    sn.boxplot(data=df, x='Model', y=metric, palette="Blues", ax=ax)
+    sn.stripplot(data=df, x='Model', y=metric, color='black', alpha=0.3, ax=ax)
+
+    # Statistical Annotations Title
     if 'pairwise_comparisons' in comparison_results:
-        n_comparisons = len(comparison_results['pairwise_comparisons'])
-        n_significant = len(comparison_results.get('significant_comparisons', []))
-        pct = f"{n_significant / n_comparisons * 100:.1f}%" if n_comparisons > 0 else "N/A"
-        summary_lines.extend([
-            f"Pairwise Comparisons:",
-            f"  Total: {n_comparisons}",
-            f"  Significant: {n_significant} ({pct})",
-            f"  Correction: {comparison_results.get('correction_method', 'none')}"
-        ])
-    ax3.text(0.05, 0.95, '\n'.join(summary_lines), transform=ax3.transAxes, fontfamily='monospace', fontsize=10,
-             va='top',
-             bbox=dict(boxstyle='round,pad=0.5', facecolor='wheat', alpha=0.3))
+        pairs = comparison_results['pairwise_comparisons']
+        sig_pairs = [k for k, v in pairs.items() if v.is_significant()]
+        if sig_pairs:
+            subtitle = "Significant differences: " + ", ".join(sig_pairs)
+            if len(subtitle) > 80: subtitle = subtitle[:77] + "..."
+            ax.set_title(f"Model Comparison: {metric}\n{subtitle}", fontsize=10)
+        else:
+            ax.set_title(f"Model Comparison: {metric}\nNo significant differences found.", fontsize=10)
 
-    # 4. Assumptions check
-    ax4 = fig.add_subplot(gs[1, 1])
-    ax4.axis('off')
-    if overall_result.assumptions_met:
-        assumption_lines = ["Assumption Checks", "=" * 30]
-        for assumption, met in overall_result.assumptions_met.items():
-            status = "✓" if met else "✗"
-            assumption_lines.append(f"{status} {assumption.replace('_', ' ').title()}")
-        if overall_result.warnings:
-            assumption_lines.extend(["", "Warnings:"])
-            for warning in overall_result.warnings[:3]:
-                assumption_lines.append(f"  ⚠ {warning[:50]}...")
-        ax4.text(0.05, 0.95, '\n'.join(assumption_lines), transform=ax4.transAxes, fontfamily='monospace', fontsize=9,
-                 va='top',
-                 bbox=dict(boxstyle='round,pad=0.5', facecolor='lightblue', alpha=0.3))
-
-    # 5. Pairwise comparisons
-    if 'pairwise_comparisons' in comparison_results:
-        ax5 = fig.add_subplot(gs[2, :])
-        pairwise = comparison_results['pairwise_comparisons']
-        comparison_names = list(pairwise.keys())
-        display_names = [name.replace('_vs_', '\nvs\n') for name in comparison_names]
-        p_values = [result.p_value for result in pairwise.values()]
-        corrected_p_values = [result.corrected_p_value or result.p_value for result in pairwise.values()]
-        significant = [result.is_significant() for result in pairwise.values()]
-
-        x = np.arange(len(comparison_names))
-        width = 0.35
-        bars1 = ax5.bar(x - width / 2, p_values, width, label='Original p-value', alpha=0.7, edgecolor='black',
-                        linewidth=0.5)
-        bars2 = ax5.bar(x + width / 2, corrected_p_values, width, label=f'Corrected p-value', alpha=0.7,
-                        edgecolor='black', linewidth=0.5)
-
-        for bar, sig in zip(bars2, significant):
-            bar.set_color('crimson' if sig else 'steelblue')
-
-        ax5.axhline(y=0.05, color='red', linestyle='--', alpha=0.8, linewidth=2, label='α = 0.05', zorder=0)
-        ax5.set_xlabel('Pairwise Comparisons', fontsize=11, fontweight='bold')
-        ax5.set_ylabel('P-value (log scale)', fontsize=11, fontweight='bold')
-        ax5.set_title(
-            f'Pairwise Comparisons with {comparison_results.get("correction_method", "unknown").title()} Correction',
-            fontsize=12, fontweight='bold')
-        ax5.set_xticks(x)
-        ax5.set_xticklabels(display_names, rotation=0, ha='center', fontsize=9)
-        ax5.legend(loc='upper right')
-        ax5.set_yscale('log')
-        ax5.grid(axis='y', alpha=0.3, which='both')
-
-        for i, (corr_p, sig) in enumerate(zip(corrected_p_values, significant)):
-            if sig:
-                y_pos = corr_p * 1.2
-                ax5.text(i, y_pos, '***' if corr_p < 0.001 else '**' if corr_p < 0.01 else '*', ha='center',
-                         va='bottom', fontsize=14, fontweight='bold', color='crimson')
-
-    plt.suptitle('Multiple Comparisons Analysis', fontsize=14, fontweight='bold', y=0.98)
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
-
-    return _handle_plot_output(fig, show)
+    return _finalize_plot(fig, show)
 
 
-def plot_pairwise_comparison_matrix(comparison_results: Dict[str, Any],
-                                    figsize: Tuple[int, int] = (12, 10),
-                                    show_effect_sizes: bool = True,
-                                    annotate_significance: bool = True,
-                                    show: Optional[bool] = None) -> 'Figure':
+def plot_comparison_forest(
+        comparison_results: Dict[str, Any],
+        baseline_model: str,
+        metric: str = 'Accuracy',
+        show: Optional[bool] = None
+) -> Optional['Figure']:
+    """
+    OPTION C: Forest Plot showing difference from baseline.
+    Visualizes: Mean(Model) - Mean(Baseline) with 95% Confidence Intervals.
+    """
+    _check_plotting()
+
+    if 'raw_data' in comparison_results:
+        data_dict = comparison_results['raw_data']
+    elif all(isinstance(v, (list, pd.Series, np.ndarray)) for v in comparison_results.values()):
+        data_dict = comparison_results
+    else:
+        settings.logger.error("Could not find raw data.")
+        return None
+
+    if baseline_model not in data_dict:
+        settings.logger.error(f"Baseline model '{baseline_model}' not found in results.")
+        return None
+
+    baseline_scores = np.array(data_dict[baseline_model])
+    baseline_mean = np.mean(baseline_scores)
+
+    models = []
+    diff_means = []
+    cis = []
+    colors = []
+
+    for name, scores in data_dict.items():
+        if name == baseline_model: continue
+
+        scores = np.array(scores)
+        diff = scores.mean() - baseline_mean
+
+        # Welch's t-interval approximation
+        se_diff = np.sqrt(np.var(scores, ddof=1) / len(scores) + np.var(baseline_scores, ddof=1) / len(baseline_scores))
+        ci = 1.96 * se_diff
+
+        models.append(name)
+        diff_means.append(diff)
+        cis.append(ci)
+
+        if diff - ci > 0:
+            colors.append(settings.THEME['test'])  # Better
+        elif diff + ci < 0:
+            colors.append(settings.THEME['significant'])  # Worse
+        else:
+            colors.append('gray')  # Neutral
+
+    fig, ax = plt.subplots(figsize=(8, len(models) * 0.8 + 2))
+
+    y_pos = np.arange(len(models))
+    ax.errorbar(diff_means, y_pos, xerr=cis, fmt='o', color='black', ecolor=colors, capsize=5)
+
+    ax.axvline(0, color=settings.THEME['baseline'], linestyle='--')
+
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(models)
+    ax.set_xlabel(f"Difference in {metric} (vs {baseline_model})")
+    ax.set_title(f"Model Performance vs Baseline ({baseline_model})")
+    ax.grid(axis='x', linestyle=':', alpha=0.5)
+
+    return _finalize_plot(fig, show)
+
+
+def plot_pairwise_comparison_matrix(
+        comparison_results: Dict[str, Any],
+        figsize: Tuple[int, int] = (12, 10),
+        show_effect_sizes: bool = True,
+        annotate_significance: bool = True,
+        show: Optional[bool] = None
+) -> Optional['Figure']:
     """Creates a matrix visualization of pairwise comparison results."""
-    _check_matplotlib()
+    _check_plotting()
     _check_seaborn()
 
     if 'pairwise_comparisons' not in comparison_results:
-        print("No pairwise comparisons to plot.")
+        settings.logger.warning("No pairwise comparisons to plot.")
         return None
 
     pairwise = comparison_results['pairwise_comparisons']
@@ -660,16 +574,16 @@ def plot_pairwise_comparison_matrix(comparison_results: Dict[str, Any],
     plt.suptitle(f'Pairwise Comparison Matrix ({n_models} models)', fontsize=14, fontweight='bold')
     plt.tight_layout(rect=[0, 0, 1, 0.96])
 
-    return _handle_plot_output(fig, show)
+    return _finalize_plot(fig, show)
 
 
 def plot_training_stability(stability_results: Dict[str, Any], figsize: Tuple[int, int] = (12, 8),
-                            show: Optional[bool] = None) -> 'Figure':
+                            show: Optional[bool] = None) -> Optional['Figure']:
     """Visualizes training stability metrics."""
     _check_matplotlib()
 
     if 'error' in stability_results:
-        print(f"Cannot plot training stability: {stability_results['error']}")
+        settings.logger.error(f"Cannot plot training stability: {stability_results['error']}")
         return None
 
     fig, axes = plt.subplots(2, 2, figsize=figsize)
@@ -730,11 +644,11 @@ def plot_training_stability(stability_results: Dict[str, Any], figsize: Tuple[in
 
     plt.tight_layout()
 
-    return _handle_plot_output(fig, show)
+    return _finalize_plot(fig, show)
 
 
 def plot_autocorr_vs_lag(data: Union[pd.Series, List[float]], max_lag: int = 20,
-                         title: str = "Autocorrelation of Loss", show: Optional[bool] = None) -> 'Figure':
+                         title: str = "Autocorrelation of Loss", show: Optional[bool] = None) -> Optional['Figure']:
     """Plots the autocorrelation of a time series as a function of lag."""
     _check_matplotlib()
     if not isinstance(data, pd.Series): data = pd.Series(data)
@@ -751,11 +665,12 @@ def plot_autocorr_vs_lag(data: Union[pd.Series, List[float]], max_lag: int = 20,
     plt.axhline(y=0, color='r', linestyle='--')
     plt.grid(True)
 
-    return _handle_plot_output(fig, show)
+    return _finalize_plot(fig, show)
 
 
 def plot_averaged_autocorr(lags: List[float], mean_autocorr: List[float], std_autocorr: List[float],
-                           title: str = "Averaged Autocorrelation of Loss", show: Optional[bool] = None) -> 'Figure':
+                           title: str = "Averaged Autocorrelation of Loss", show: Optional[bool] = None) -> Optional[
+    'Figure']:
     """Plots the mean autocorrelation across multiple runs."""
     _check_matplotlib()
     fig = plt.figure(figsize=(10, 6))
@@ -769,18 +684,18 @@ def plot_averaged_autocorr(lags: List[float], mean_autocorr: List[float], std_au
     plt.legend()
     plt.grid(True)
 
-    return _handle_plot_output(fig, show)
+    return _finalize_plot(fig, show)
 
 
 def plot_pacf_vs_lag(data: Union[pd.Series, List[float]], max_lag: int = 20,
                      title: str = "Partial Autocorrelation of Loss", alpha: float = 0.05,
-                     show: Optional[bool] = None) -> 'Figure':
+                     show: Optional[bool] = None) -> Optional['Figure']:
     """Plots PACF with confidence intervals."""
     _check_matplotlib()
     try:
         from statsmodels.tsa.stattools import pacf
     except ImportError:
-        print("statsmodels required for PACF.")
+        settings.logger.warning("statsmodels required for PACF.")
         return None
 
     if not isinstance(data, pd.Series): data = pd.Series(data)
@@ -797,12 +712,12 @@ def plot_pacf_vs_lag(data: Union[pd.Series, List[float]], max_lag: int = 20,
     plt.title(title)
     plt.grid(True)
 
-    return _handle_plot_output(fig, show)
+    return _finalize_plot(fig, show)
 
 
 def plot_averaged_pacf(lags: List[float], mean_pacf: List[float], std_pacf: List[float],
                        title: str = "Averaged Partial Autocorrelation of Loss", conf_level: float = 0.95,
-                       show: Optional[bool] = None) -> 'Figure':
+                       show: Optional[bool] = None) -> Optional['Figure']:
     """Plots mean PACF across multiple runs."""
     _check_matplotlib()
     fig = plt.figure(figsize=(10, 6))
@@ -819,4 +734,4 @@ def plot_averaged_pacf(lags: List[float], mean_pacf: List[float], std_pacf: List
     plt.legend()
     plt.grid(True)
 
-    return _handle_plot_output(fig, show)
+    return _finalize_plot(fig, show)
