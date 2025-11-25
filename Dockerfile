@@ -33,6 +33,7 @@ RUN python --version
 
 # Install library's core dependencies
 RUN pip --default-timeout=120 install \
+    "protobuf<4.0.0" \
     tensorflow==2.16.1 \
     jupyterlab \
     poetry

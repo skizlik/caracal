@@ -72,6 +72,18 @@ def _should_show(show_arg: Optional[bool]) -> bool:
     return settings.should_display()
 
 
+def _handle_plot_output(fig: 'Figure', show_arg: Optional[bool]) -> Optional['Figure']:
+    """
+    Centralized logic for showing/returning plots.
+    If we show the plot, we return None to prevent Jupyter from double-rendering.
+    """
+    should_show = show_arg if show_arg is not None else settings.should_display()
+
+    if should_show:
+        plt.show()
+        return None
+    return fig
+
 def plot_confusion_matrix(cm_df: pd.DataFrame, title: str = "", show: Optional[bool] = None) -> 'Figure':
     """Plots a confusion matrix heatmap from a DataFrame."""
     _check_matplotlib()
@@ -83,9 +95,7 @@ def plot_confusion_matrix(cm_df: pd.DataFrame, title: str = "", show: Optional[b
     plt.xlabel("Predicted Label")
     plt.ylabel("True Label")
 
-    if _should_show(show):
-        plt.show()
-    return fig
+    return _handle_plot_output(fig, show)
 
 
 def plot_training_history(history: Any, title: str = None, metrics: List[str] = None,
@@ -184,9 +194,7 @@ def plot_training_history(history: Any, title: str = None, metrics: List[str] = 
     fig.suptitle(title, fontsize=14, fontweight='bold')
     plt.tight_layout(rect=[0, 0, 1, 0.96])
 
-    if _should_show(show):
-        plt.show()
-    return fig
+    return _handle_plot_output(fig, show)
 
 
 def plot_roc_curve(model_wrapper: 'BaseModelWrapper', X_test: np.ndarray, y_test: np.ndarray,
@@ -223,9 +231,7 @@ def plot_roc_curve(model_wrapper: 'BaseModelWrapper', X_test: np.ndarray, y_test
     plt.title(title if title else 'Receiver Operating Characteristic')
     plt.legend(loc="lower right")
 
-    if _should_show(show):
-        plt.show()
-    return fig
+    return _handle_plot_output(fig, show)
 
 
 def plot_precision_recall_curve(model_wrapper: 'BaseModelWrapper', X_test: np.ndarray, y_test: np.ndarray,
@@ -261,10 +267,7 @@ def plot_precision_recall_curve(model_wrapper: 'BaseModelWrapper', X_test: np.nd
     plt.title(title if title else 'Precision-Recall Curve')
     plt.legend(loc="lower left")
 
-    if _should_show(show):
-        plt.show()
-    return fig
-
+    return _handle_plot_output(fig, show)
 
 def plot_variability_summary(all_runs_metrics_list: List[pd.DataFrame],
                              final_metrics_series: Union[pd.Series, List],
@@ -429,9 +432,7 @@ def plot_variability_summary(all_runs_metrics_list: List[pd.DataFrame],
     plt.suptitle(f'Variability Study: {n_runs} Runs × {n_epochs} Epochs', fontsize=14, fontweight='bold')
     plt.tight_layout(rect=[0, 0, 1, 0.96])
 
-    if _should_show(show):
-        plt.show()
-    return fig
+    return _handle_plot_output(fig, show)
 
 
 def plot_multiple_comparisons(comparison_results: Dict[str, Any],
@@ -573,9 +574,7 @@ def plot_multiple_comparisons(comparison_results: Dict[str, Any],
     plt.suptitle('Multiple Comparisons Analysis', fontsize=14, fontweight='bold', y=0.98)
     plt.tight_layout(rect=[0, 0, 1, 0.96])
 
-    if _should_show(show):
-        plt.show()
-    return fig
+    return _handle_plot_output(fig, show)
 
 
 def plot_pairwise_comparison_matrix(comparison_results: Dict[str, Any],
@@ -661,9 +660,7 @@ def plot_pairwise_comparison_matrix(comparison_results: Dict[str, Any],
     plt.suptitle(f'Pairwise Comparison Matrix ({n_models} models)', fontsize=14, fontweight='bold')
     plt.tight_layout(rect=[0, 0, 1, 0.96])
 
-    if _should_show(show):
-        plt.show()
-    return fig
+    return _handle_plot_output(fig, show)
 
 
 def plot_training_stability(stability_results: Dict[str, Any], figsize: Tuple[int, int] = (12, 8),
@@ -733,9 +730,7 @@ def plot_training_stability(stability_results: Dict[str, Any], figsize: Tuple[in
 
     plt.tight_layout()
 
-    if _should_show(show):
-        plt.show()
-    return fig
+    return _handle_plot_output(fig, show)
 
 
 def plot_autocorr_vs_lag(data: Union[pd.Series, List[float]], max_lag: int = 20,
@@ -756,9 +751,7 @@ def plot_autocorr_vs_lag(data: Union[pd.Series, List[float]], max_lag: int = 20,
     plt.axhline(y=0, color='r', linestyle='--')
     plt.grid(True)
 
-    if _should_show(show):
-        plt.show()
-    return fig
+    return _handle_plot_output(fig, show)
 
 
 def plot_averaged_autocorr(lags: List[float], mean_autocorr: List[float], std_autocorr: List[float],
@@ -776,9 +769,7 @@ def plot_averaged_autocorr(lags: List[float], mean_autocorr: List[float], std_au
     plt.legend()
     plt.grid(True)
 
-    if _should_show(show):
-        plt.show()
-    return fig
+    return _handle_plot_output(fig, show)
 
 
 def plot_pacf_vs_lag(data: Union[pd.Series, List[float]], max_lag: int = 20,
@@ -806,9 +797,7 @@ def plot_pacf_vs_lag(data: Union[pd.Series, List[float]], max_lag: int = 20,
     plt.title(title)
     plt.grid(True)
 
-    if _should_show(show):
-        plt.show()
-    return fig
+    return _handle_plot_output(fig, show)
 
 
 def plot_averaged_pacf(lags: List[float], mean_pacf: List[float], std_pacf: List[float],
@@ -830,6 +819,4 @@ def plot_averaged_pacf(lags: List[float], mean_pacf: List[float], std_pacf: List
     plt.legend()
     plt.grid(True)
 
-    if _should_show(show):
-        plt.show()
-    return fig
+    return _handle_plot_output(fig, show)
