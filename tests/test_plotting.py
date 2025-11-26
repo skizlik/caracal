@@ -1,128 +1,141 @@
-"""Test plotting functions."""
+# tests/test_plotting.py
+
+# Imports
+
 import pytest
-import numpy as np
 import pandas as pd
-import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend for testing
-import matplotlib.pyplot as plt
+import numpy as np
+from unittest.mock import MagicMock, patch
+
+
 from caracal.plotting import (
     plot_confusion_matrix,
     plot_training_history,
     plot_variability_summary,
-    plot_multiple_comparisons,
-    plot_pairwise_comparison_matrix,
-    plot_training_stability,
     plot_autocorr_vs_lag,
-    plot_averaged_autocorr
+    plot_averaged_autocorr,
+    plot_training_stability,
+    plot_comparison_boxplots,  # New
+    plot_comparison_forest  # New
 )
+from caracal import settings
 
+
+# --- Fixtures ---
+
+@pytest.fixture
+def sample_history_df():
+    return pd.DataFrame({
+        'epoch': [1, 2, 3],
+        'train_accuracy': [0.5, 0.6, 0.7],
+        'val_accuracy': [0.4, 0.5, 0.6],
+        'train_loss': [1.0, 0.8, 0.6],
+        'val_loss': [1.1, 0.9, 0.7]
+    })
+
+
+@pytest.fixture
+def mock_comparison_results():
+    """Mock results structure for comparison plots."""
+    # Mocking StatisticalTestResult objects for pairwise
+    mock_res_a = MagicMock()
+    mock_res_a.is_significant.return_value = True
+
+    return {
+        'overall_test': MagicMock(),
+        'pairwise_comparisons': {
+            'ModelA_vs_ModelB': mock_res_a
+        },
+        # The new plots require the raw data dictionary
+        'raw_data': {
+            'ModelA': [0.85, 0.86, 0.84, 0.85],
+            'ModelB': [0.75, 0.74, 0.76, 0.75],
+            'ModelC': [0.80, 0.81, 0.79, 0.80]
+        }
+    }
+
+
+# --- Tests ---
 
 class TestBasicPlots:
-    """Test basic plotting functions."""
-    
     def setup_method(self):
-        """Create sample data for tests."""
-        self.history = pd.DataFrame({
-            'epoch': range(10),
-            'train_accuracy': np.linspace(0.5, 0.9, 10),
-            'val_accuracy': np.linspace(0.45, 0.85, 10),
-            'loss': np.linspace(1.0, 0.1, 10)
-        })
-        
-        self.all_histories = [self.history, self.history]
-        self.final_accuracies = pd.Series([0.85, 0.88, 0.83, 0.89, 0.86])
-        
-        # Confusion matrix data
-        self.cm_df = pd.DataFrame(
-            [[10, 2], [1, 15]], 
-            index=['True 0', 'True 1'],
-            columns=['Pred 0', 'Pred 1']
-        )
-    
-    def teardown_method(self):
-        """Close all figures after each test."""
-        plt.close('all')
-    
-    def test_plot_confusion_matrix(self):
-        """Test confusion matrix plot."""
-        fig = plot_confusion_matrix(self.cm_df, title="Test CM", show=False)
+        # Ensure we don't actually block execution
+        settings.set_display_plots(False)
+
+    @patch("matplotlib.pyplot.show")
+    def test_plot_confusion_matrix(self, mock_show):
+        cm = pd.DataFrame([[10, 2], [3, 15]], columns=['A', 'B'], index=['A', 'B'])
+        fig = plot_confusion_matrix(cm)
         assert fig is not None
-        assert isinstance(fig, plt.Figure)
-    
-    def test_plot_training_history(self):
-        """Test training history plot."""
-        fig = plot_training_history(
-            self.history, 
-            title="Test History",
-            metrics=['train_accuracy', 'val_accuracy'],
-            show=False
-        )
+
+    @patch("matplotlib.pyplot.show")
+    def test_plot_training_history(self, mock_show, sample_history_df):
+        fig = plot_training_history(sample_history_df)
         assert fig is not None
-        assert isinstance(fig, plt.Figure)
-    
-    def test_plot_variability_summary(self):
-        """Test variability summary plot."""
-        fig = plot_variability_summary(
-            self.all_histories,
-            self.final_accuracies,
-            metric='accuracy',
-            show=False
-        )
+
+    @patch("matplotlib.pyplot.show")
+    def test_plot_variability_summary(self, mock_show, sample_history_df):
+        final_accs = pd.Series([0.6, 0.65, 0.62])
+        # Must provide list of DFs
+        fig = plot_variability_summary([sample_history_df], final_accs)
         assert fig is not None
-    
-    def test_plot_autocorr_vs_lag(self):
-        """Test autocorrelation plot."""
-        data = pd.Series(np.random.randn(100))
-        fig = plot_autocorr_vs_lag(data, max_lag=20, show=False)
+
+    @patch("matplotlib.pyplot.show")
+    def test_plot_autocorr_vs_lag(self, mock_show):
+        data = pd.Series(np.random.rand(50))
+        fig = plot_autocorr_vs_lag(data, max_lag=5)
         assert fig is not None
-    
-    def test_plot_averaged_autocorr(self):
-        """Test averaged autocorrelation plot."""
-        lags = list(range(1, 21))
-        mean_autocorr = np.random.rand(20)
-        std_autocorr = np.random.rand(20) * 0.1
-        
-        fig = plot_averaged_autocorr(
-            lags, mean_autocorr, std_autocorr, 
-            title="Test", show=False
-        )
+
+    @patch("matplotlib.pyplot.show")
+    def test_plot_averaged_autocorr(self, mock_show):
+        lags = [1, 2, 3]
+        means = [0.5, 0.3, 0.1]
+        stds = [0.1, 0.1, 0.1]
+        fig = plot_averaged_autocorr(lags, means, stds)
         assert fig is not None
 
 
 class TestStatisticalPlots:
-    """Test statistical visualization functions."""
-    
-    def test_plot_multiple_comparisons(self):
-        """Test multiple comparisons plot."""
-        from caracal.analysis import StatisticalTestResult
-        
-        # Mock comparison results
-        comparison_results = {
-            'overall_test': StatisticalTestResult(
-                test_name="Kruskal-Wallis",
-                statistic=12.5,
-                p_value=0.002
-            ),
-            'pairwise_comparisons': {},
-            'correction_method': 'holm'
-        }
-        
-        fig = plot_multiple_comparisons(comparison_results, show=False)
-        assert fig is not None
-    
-    def test_plot_training_stability(self):
-        """Test training stability plot."""
-        stability_results = {
+    def setup_method(self):
+        settings.set_display_plots(False)
+
+    @patch("matplotlib.pyplot.show")
+    def test_plot_training_stability(self, mock_show):
+        results = {
             'n_runs': 5,
             'common_length': 10,
-            'final_loss_mean': 0.1,
-            'final_loss_std': 0.02,
+            'final_loss_mean': 0.5,
+            'final_loss_std': 0.1,
             'final_loss_cv': 0.2,
+            'stability_assessment': 'moderate',
             'convergence_rate': 0.8,
             'converged_runs': 4,
-            'stability_assessment': 'moderate',
-            'final_losses_list': [0.08, 0.09, 0.10, 0.11, 0.12]
+            'final_losses_list': [0.4, 0.5, 0.6, 0.5, 0.5]
         }
-        
-        fig = plot_training_stability(stability_results, show=False)
+        fig = plot_training_stability(results)
         assert fig is not None
+
+    @patch("matplotlib.pyplot.show")
+    def test_plot_comparison_boxplots(self, mock_show, mock_comparison_results):
+        """Test the new boxplot visualization."""
+        fig = plot_comparison_boxplots(mock_comparison_results, metric='Accuracy')
+        assert fig is not None
+
+    @patch("matplotlib.pyplot.show")
+    def test_plot_comparison_forest(self, mock_show, mock_comparison_results):
+        """Test the new forest plot visualization."""
+        fig = plot_comparison_forest(
+            mock_comparison_results,
+            baseline_model='ModelB',
+            metric='Accuracy'
+        )
+        assert fig is not None
+
+    def test_plot_comparison_forest_invalid_baseline(self, mock_comparison_results):
+        """Test that invalid baseline returns None/Error logic."""
+        fig = plot_comparison_forest(
+            mock_comparison_results,
+            baseline_model='Model_Does_Not_Exist'
+        )
+        # Should handle gracefully (log error and return None)
+        assert fig is None
