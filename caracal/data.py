@@ -796,6 +796,12 @@ class TimeSeriesDataHandler(DataHandler):
               f"Val: {len(val_data) if val_data is not None else 0}, "
               f"Test: {len(test_data) if test_data is not None else 0}")
 
+        return {
+            'train_data': train_gen,
+            'val_data': val_gen,
+            'test_data': test_gen
+        }
+
 
 class ArraysDataHandler(DataHandler):
     """

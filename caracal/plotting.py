@@ -45,6 +45,15 @@ def _check_plotting():
     if not HAS_PLOTTING:
         raise ImportError("matplotlib and seaborn are required. Install with: pip install matplotlib seaborn")
 
+# FIX THIS: eliminate backward compatibility, prefer to update functions
+
+def _check_matplotlib():
+    """Alias for _check_plotting for backward compatibility."""
+    _check_plotting()
+
+def _check_seaborn():
+    """Alias for _check_plotting for backward compatibility."""
+    _check_plotting()
 
 def _check_sklearn_metrics():
     if not HAS_SKLEARN_METRICS:

@@ -114,7 +114,7 @@ def test_variability_study_missing_target(sample_df):
 
 @patch("caracal.api._stat_compare")
 @patch("caracal.api.variability_study")
-def test_compare_models_flow(mock_var_study, mock_stat_compare, sample_df, dummy_model_func, mock_runner_results):
+def test_compare_models_flow(mock_var_study, mock_stat_compare, sample_df, dummy_model_func, dummy_model_func_2, mock_runner_results):
     """Test that compare_models correctly orchestrates multiple studies."""
     # Arrange
     mock_var_study.return_value = mock_runner_results
